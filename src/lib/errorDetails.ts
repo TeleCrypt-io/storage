@@ -1,27 +1,30 @@
 const SENSITIVE_KEY_SOURCE =
   "(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|authorization|proxy-authorization|cookie|set-cookie|password|passwd|secret|client[_-]?secret|code|state|code[_-]?verifier|device[_-]?code|(?:oidc[_-]?)?client[_-]?id|(?:matrix[_-]?)?(?:user|device)[_-]?id|(?:user|client|device|session|account|member|customer|owner|recipient|room|vault|folder|file|tree|completed)[_-]?ids?|mxid|email(?:[_-]?address)?|user(?:name)?|display[_-]?name|recovery[_-]?(?:key|secret)|(?:secret[_-]?storage|private|encryption|signing)[_-]?key|key)";
 const SENSITIVE_ASSIGNMENT_PREFIX =
-  `\\b${SENSITIVE_KEY_SOURCE}\\b[\\\"']?\\s*[:=]\\s*`;
+  `\\b${SENSITIVE_KEY_SOURCE}\\b["']?\\s*[:=]\\s*`;
 const SENSITIVE_KEY_PATTERN = new RegExp(`^${SENSITIVE_KEY_SOURCE}$`, "iu");
 const QUOTED_SENSITIVE_ASSIGNMENT_PATTERN = new RegExp(
-  `(${SENSITIVE_ASSIGNMENT_PREFIX})([\"'])([\\s\\S]*?)\\2`,
+  `(${SENSITIVE_ASSIGNMENT_PREFIX})(["'])([\\s\\S]*?)\\2`,
   "giu",
 );
 const UNQUOTED_SENSITIVE_ASSIGNMENT_PATTERN = new RegExp(
-  `(${SENSITIVE_ASSIGNMENT_PREFIX})([^\\\"'\\s,;}]+)`,
+  `(${SENSITIVE_ASSIGNMENT_PREFIX})([^"'\\s,;}]+)`,
   "giu",
 );
 
-const BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/giu;
-const TOKEN_VALUE_PATTERN = /\b(token[-_])[A-Za-z0-9._~+\/-]+/giu;
+const BEARER_PATTERN = /\b(Bearer\s+)[-A-Za-z0-9._~+/]+=*/giu;
+const TOKEN_VALUE_PATTERN = /\b(token[-_])[-A-Za-z0-9._~+/]+/giu;
 const URI_CREDENTIAL_PATTERN = /(https?:\/\/)([^\s/@:]+):([^\s/@]+)@/giu;
 const URI_SECRET_PARAMETER_PATTERN =
   /([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|code|state|secret|password)=)[^&#\s]*/giu;
 
 function escapeControlCharacters(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]/gu, (character) =>
-    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
+  return Array.from(value, (character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+      ? `\\u${codePoint.toString(16).padStart(4, "0")}`
+      : character;
+  }).join("");
 }
 
 /**

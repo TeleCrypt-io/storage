@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 const workflow = readFileSync(".github/workflows/release-ui.yml", "utf8");
 const verify = readFileSync(".github/workflows/verify.yml", "utf8");
 const sharedUiRelease = readFileSync("scripts/verify-shared-ui-release.sh", "utf8");
+const captureDiagnostics = readFileSync("scripts/capture-diagnostics.sh", "utf8");
 const pagesPackage = readFileSync("scripts/package-pages.sh", "utf8");
 const archiveTests = readFileSync("scripts/test-validate-pages-archive.py", "utf8");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -17,14 +18,16 @@ function captureBody(text, name, closingIndent) {
   return text.slice(start, end < 0 ? text.length : end);
 }
 
-const completeStderrCapture = /finish_capture "\$status" true "\$output" "\$error"/;
 for (const [name, body] of [
   ["capture_gh", captureBody(workflow, "capture_gh", "          ")],
   ["capture_command", captureBody(sharedUiRelease, "capture_command", "")],
 ]) {
-  if (!/>"\$output" 2>"\$error"/.test(body) || !completeStderrCapture.test(body)) {
+  if (!/finish_capture "\$status" (?:true|false) "\$(?:output|stdout_path)" "\$(?:error|stderr_path)"/.test(body)) {
     throw new Error(`${name} must retain stdout as data and replay complete stderr without making stderr presence a failure`);
   }
+}
+if (!/>"\$stdout_path" 2>"\$stderr_path"/.test(captureDiagnostics) || !/cat "\$stderr_path"/.test(captureDiagnostics)) {
+  throw new Error("shared diagnostic capture must retain and replay complete stderr");
 }
 if ([workflow, verify].some((text) => text.includes("--loglevel=error") || text.includes("--loglevel=silent") || text.includes("--silent"))) {
   throw new Error("required npm commands must not suppress warnings or diagnostics");
