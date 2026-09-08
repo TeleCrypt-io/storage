@@ -198,7 +198,7 @@ if (assetRecheckPredicate === brokenAssetRecheckPredicate || releaseShell.includ
 if (assetRecheckPredicate !== expectedAssetRecheckPredicate) {
   throw new Error("draft asset recheck predicate differs from the exact contract");
 }
-function evaluateAssetPredicate(predicate, document) {
+function assertAssetPredicate(predicate, document, expectedStatus, expectedError = undefined) {
   const result = spawnSync(
     "jq",
     [
@@ -214,29 +214,43 @@ function evaluateAssetPredicate(predicate, document) {
       "10",
       predicate,
     ],
-    { input: `${JSON.stringify(document)}\n`, encoding: "utf8" },
+    {
+      input: `${JSON.stringify(document)}\n`,
+      encoding: "utf8",
+      maxBuffer: Number.POSITIVE_INFINITY,
+    },
   );
-  if (result.error) throw new Error(`jq predicate regression check could not run: ${result.error.message}`);
-  return result.status === 0;
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  const spawnError = result.error ? String(result.error.stack ?? result.error) : "none";
+  const expectedLabel = expectedStatus === 5 ? "historical broken predicate regression" : "jq predicate assertion";
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(`${expectedLabel} stderr:\n${stderr}`);
+  if (
+    result.error ||
+    result.status !== expectedStatus ||
+    (expectedError !== undefined && !stderr.includes(expectedError))
+  ) {
+    throw new Error(
+      `${expectedLabel} jq exit status mismatch: expected ${expectedStatus}, got ${result.status}; ` +
+      `signal=${result.signal ?? "none"}; spawnerror=${spawnError}\n` +
+      `stdout:\n${stdout}\n` +
+      `stderr:\n${stderr}`,
+    );
+  }
 }
 const validAssetDocument = {
   assets: [{ id: 43, name: "storage-web-1.2.3.pages.zip", state: "uploaded", size: 10, digest: `sha256:${"a".repeat(64)}` }],
 };
-if (!evaluateAssetPredicate(assetRecheckPredicate, validAssetDocument)) {
-  throw new Error("corrected draft asset recheck rejected a valid asset");
-}
-if (evaluateAssetPredicate(brokenAssetRecheckPredicate, validAssetDocument)) {
-  throw new Error("the old broken draft asset recheck accepted a valid asset");
-}
+assertAssetPredicate(assetRecheckPredicate, validAssetDocument, 0);
+assertAssetPredicate(brokenAssetRecheckPredicate, validAssetDocument, 5, 'Cannot index number with string "id"');
 for (const asset of [
   { ...validAssetDocument.assets[0], id: 0 },
   { ...validAssetDocument.assets[0], id: 43.5 },
   { ...validAssetDocument.assets[0], id: "43" },
   { ...validAssetDocument.assets[0], id: undefined },
 ]) {
-  if (evaluateAssetPredicate(assetRecheckPredicate, { assets: [asset] })) {
-    throw new Error("corrected draft asset recheck accepted an invalid asset id");
-  }
+  assertAssetPredicate(assetRecheckPredicate, { assets: [asset] }, 1);
 }
 for (const fragment of [
   "refs/tags/$RELEASE_TAG:refs/remotes/origin/release-tag", "refs/heads/main:refs/remotes/origin/main",
