@@ -914,16 +914,29 @@ describe("vault contents", () => {
     const user = await openVault("Docs", { files: [{ id: "$f1", name: "hello.txt" }] });
     await screen.findByText("hello.txt");
 
-    await user.click(screen.getByTestId("download-file"));
+    const clickedAnchors: HTMLAnchorElement[] = [];
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clickedAnchors.push(this);
+    });
+    try {
+      await user.click(screen.getByTestId("download-file"));
 
-    await waitFor(() =>
-      expect(core.downloadFile).toHaveBeenCalledWith(
-        expect.anything(),
-        "!vault:localhost",
-        "$f1",
-        abortOptions(),
-      ),
-    );
+      await waitFor(() => {
+        expect(core.downloadFile).toHaveBeenCalledWith(
+          expect.anything(),
+          "!vault:localhost",
+          "$f1",
+          abortOptions(),
+        );
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(clickedAnchors).toHaveLength(1);
+      });
+      expect(clickedAnchors[0]).toHaveAttribute("href", expect.stringMatching(/^blob:/));
+      expect(clickedAnchors[0]).toHaveAttribute("download", "hello.txt");
+      expect(clickedAnchors[0]).toHaveAttribute("data-testid", "download-anchor");
+    } finally {
+      clickSpy.mockRestore();
+    }
   });
 
   it("renames and deletes a file", async () => {
