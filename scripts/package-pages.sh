@@ -77,7 +77,22 @@ done < <(find -P "$dist_dir" -type f -print0)
 
 stage_dir="$(mktemp -d)"
 manifest="$(mktemp)"
-trap 'rm -rf "$stage_dir"; rm -f "$manifest"' EXIT
+cleanup() {
+  local status=$? cleanup_status=0 removal_status
+  rm -rf -- "$stage_dir" || cleanup_status=$?
+  if rm -f -- "$manifest"; then
+    removal_status=0
+  else
+    removal_status=$?
+    if test "$cleanup_status" -eq 0; then cleanup_status="$removal_status"; fi
+  fi
+  if test "$status" -eq 0 && test "$cleanup_status" -ne 0; then
+    printf 'Pages package cleanup failed (status %s)\n' "$cleanup_status" >&2
+    status="$cleanup_status"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 cp -a --reflink=auto -- "$dist_dir"/. "$stage_dir"/
 find -P "$stage_dir" -type f -exec touch -d "@${source_date_epoch}" {} +
 
@@ -85,8 +100,7 @@ find -P "$stage_dir" -type f -exec touch -d "@${source_date_epoch}" {} +
   cd "$stage_dir"
   find . -type f -print | LC_ALL=C sort >"$manifest"
 )
-python3 "$script_dir/bounded-command.py" --cwd "$stage_dir" --stdin "$manifest" --stdout "$stage_dir/zip.stdout" --stderr "$stage_dir/zip.stderr" --max-stdout-bytes 65536 --max-stderr-bytes 65536 --timeout-seconds 300 --kill-after-seconds 5 -- zip -X -q -D "$partial_zip" -@
-test ! -s "$stage_dir/zip.stdout" -a ! -s "$stage_dir/zip.stderr"
+(cd "$stage_dir" && timeout --signal=TERM --kill-after=5s 300s zip -X -D "$partial_zip" -@ <"$manifest")
 test -s "$partial_zip"
 test "$(wc -c <"$partial_zip")" -le "$max_archive_bytes"
 python3 "$script_dir/validate-pages-archive.py" "$partial_zip"

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { formatOperationError } from "./formatOperationError";
 import {
   PENDING_REVOCATION_STORAGE_KEY,
   SESSION_STORAGE_KEY,
@@ -44,8 +45,48 @@ describe("tab-scoped session persistence", () => {
     delete incomplete.deviceId;
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(incomplete));
 
-    expect(loadSession()).toBeNull();
+    expect(() => loadSession()).toThrow("Stored session is invalid");
     expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("preserves malformed stored session parse failures", () => {
+    sessionStorage.setItem(SESSION_STORAGE_KEY, "{");
+
+    let caught: unknown;
+    try {
+      loadSession();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SyntaxError);
+    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("preserves invalid-session and cleanup failures together", () => {
+    const original = window.sessionStorage;
+    const broken = {
+      length: 0,
+      setItem: () => undefined,
+      getItem: (key: string) => (key === SESSION_STORAGE_KEY ? "{" : null),
+      removeItem: (key: string) => {
+        if (key === SESSION_STORAGE_KEY) throw new Error("invalid session cleanup failed");
+      },
+      key: () => null,
+    } as unknown as Storage;
+    Object.defineProperty(window, "sessionStorage", { configurable: true, value: broken });
+    try {
+      let caught: unknown;
+      try {
+        loadSession();
+      } catch (error) {
+        caught = error;
+      }
+      const detail = formatOperationError(caught);
+      expect(detail).toContain("invalid session cleanup failed");
+      expect(detail).toContain("SyntaxError");
+    } finally {
+      Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
+    }
   });
 
   it("fails closed when sessionStorage cannot be written", () => {
@@ -57,8 +98,8 @@ describe("tab-scoped session persistence", () => {
       },
     });
     try {
-      expect(saveSessionIfCurrent(SESSION, null)).toBe(false);
-      expect(loadSession()).toBeNull();
+      expect(() => saveSessionIfCurrent(SESSION, null)).toThrow("Session persistence failed");
+      expect(() => loadSession()).toThrow("Browser session storage is unavailable");
     } finally {
       Object.defineProperty(window, "sessionStorage", {
         configurable: true,
@@ -67,7 +108,7 @@ describe("tab-scoped session persistence", () => {
     }
   });
 
-  it("reports an unwriteable pending-revocation record without exposing or throwing its token", () => {
+  it("reports an unwriteable pending-revocation record without exposing its token", () => {
     const original = window.sessionStorage;
     const blocked = {
       get length() {
@@ -86,12 +127,19 @@ describe("tab-scoped session persistence", () => {
       value: blocked,
     });
     try {
-      expect(
+      let caught: unknown;
+      try {
         savePendingRevocation({
           homeserver: SESSION.homeserver,
           accessToken: "secret-token",
-        }),
-      ).toBe(false);
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      const detail = formatOperationError(caught);
+      expect(detail).toContain("provider token should not escape");
+      expect(detail).not.toContain("secret-token");
     } finally {
       Object.defineProperty(window, "sessionStorage", {
         configurable: true,
@@ -114,7 +162,9 @@ describe("tab-scoped session persistence", () => {
       },
     } as unknown as Storage;
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: blocked });
-    expect(savePendingRevocation({ homeserver: SESSION.homeserver, accessToken: "volatile-token" })).toBe(false);
+    expect(() =>
+      savePendingRevocation({ homeserver: SESSION.homeserver, accessToken: "volatile-token" }),
+    ).toThrow("Session cleanup could not be persisted");
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
     expect(loadPendingRevocation()).toEqual({
       homeserver: SESSION.homeserver,
@@ -140,7 +190,7 @@ describe("tab-scoped session persistence", () => {
     } as unknown as Storage;
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: blocked });
     try {
-      expect(clearPendingRevocation()).toBe(false);
+      expect(() => clearPendingRevocation()).toThrow("Session cleanup could not be persisted");
     } finally {
       Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
     }
@@ -173,6 +223,21 @@ describe("tab-scoped session persistence", () => {
     expect(isRuntimeMatrixDeviceId("D".repeat(129))).toBe(false);
   });
 
+  it("propagates runtime configuration failures instead of treating them as invalid identities", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { origin: "https://unknown.example" },
+    });
+    try {
+      expect(() => isRuntimeMatrixUserId("@alice:localhost")).toThrow(
+        "Storage page host is not an allowed TeleCrypt environment",
+      );
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: original });
+    }
+  });
+
   it("clears only this tab's session", () => {
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(SESSION));
     sessionStorage.setItem("mx_oidc_state", "transient-state");
@@ -196,7 +261,7 @@ describe("tab-scoped session persistence", () => {
     ).toBe("client-a");
   });
 
-  it("expires login intent and clears one-time state without clearing a live session", () => {
+  it("rejects an expired login intent and still clears one-time state without clearing a live session", () => {
     sessionStorage.setItem(
       "telecrypt-io-ui:oidc-login-intent",
       JSON.stringify({ state: "state", createdAt: Date.now() - MAX_OIDC_LOGIN_INTENT_AGE_MS - 1 }),
@@ -205,11 +270,17 @@ describe("tab-scoped session persistence", () => {
     sessionStorage.setItem("telecrypt:oauth2:pkce:v1:state", "transient-state");
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(SESSION));
 
-    expect(loadOidcLoginIntent()).toBeNull();
+    expect(() => loadOidcLoginIntent()).toThrow("Stored OIDC login intent is invalid or expired");
     expect(clearOidcTransientState()).toBe(true);
     expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toEqual(JSON.stringify(SESSION));
     expect(sessionStorage.getItem("mx_oidc_state")).toBeNull();
     expect(sessionStorage.getItem("telecrypt:oauth2:pkce:v1:state")).toBeNull();
+  });
+
+  it("returns null only when the login intent is absent", () => {
+    expect(loadOidcLoginIntent()).toBeNull();
+    sessionStorage.setItem("telecrypt-io-ui:oidc-login-intent", "{");
+    expect(() => loadOidcLoginIntent()).toThrow(SyntaxError);
   });
 
   it("stores a pending token revocation only in this tab", () => {
@@ -219,5 +290,33 @@ describe("tab-scoped session persistence", () => {
     expect(loadPendingRevocation()).toEqual(pending);
     expect(sessionStorage.getItem(PENDING_REVOCATION_STORAGE_KEY)).toContain(SESSION.accessToken);
     expect(localStorage.getItem(PENDING_REVOCATION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("rejects a stored null pending-revocation value as invalid state", () => {
+    sessionStorage.setItem(PENDING_REVOCATION_STORAGE_KEY, "null");
+    expect(() => loadPendingRevocation()).toThrow("Stored pending revocation state is invalid");
+  });
+
+  it("preserves pending-revocation read failures", () => {
+    const original = window.sessionStorage;
+    const broken = {
+      setItem: () => undefined,
+      removeItem: () => undefined,
+      getItem: () => {
+        throw new Error("pending revocation read failed");
+      },
+    } as unknown as Storage;
+    Object.defineProperty(window, "sessionStorage", { configurable: true, value: broken });
+    try {
+      let caught: unknown;
+      try {
+        loadPendingRevocation();
+      } catch (error) {
+        caught = error;
+      }
+      expect(formatOperationError(caught)).toContain("pending revocation read failed");
+    } finally {
+      Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
+    }
   });
 });

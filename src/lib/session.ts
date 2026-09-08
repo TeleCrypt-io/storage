@@ -29,12 +29,13 @@ function sessionsEqual(a: Session, b: Session): boolean {
 export const SESSION_STORAGE_KEY = "telecrypt-io-ui:session";
 export const PENDING_REVOCATION_STORAGE_KEY = "telecrypt-io-ui:pending-revocation";
 export const SESSION_PERSISTENCE_ERROR = "Session persistence failed";
+export const SESSION_STORAGE_UNAVAILABLE = "Browser session storage is unavailable";
 export const SESSION_CLEANUP_PENDING_ERROR = "Session cleanup is pending";
 export const SESSION_CLEANUP_PERSISTENCE_ERROR = "Session cleanup could not be persisted";
 export const OIDC_LOGIN_INTENT_STORAGE_KEY = "telecrypt-io-ui:oidc-login-intent";
 export const MAX_SESSION_TOKEN_BYTES = 8192;
 export const MAX_SESSION_IDENTITY_BYTES = 4096;
-const MAX_MATRIX_ID_BYTES = 255;
+export const MAX_MATRIX_ID_BYTES = 255;
 const OIDC_STATE_STORAGE_PREFIXES = ["mx_oidc_", "telecrypt:oauth2:pkce:v1:"];
 export const MAX_OIDC_LOGIN_INTENT_AGE_MS = 10 * 60 * 1000;
 
@@ -48,7 +49,6 @@ export interface PendingRevocation {
   accessToken: string;
 }
 
-const MAX_PENDING_REVOCATIONS = 8;
 // A storage denial must not make an issued bearer token disappear without a retry path. This
 // volatile fallback is tab-scoped and is cleared as soon as remote revocation is confirmed.
 let volatilePendingRevocations: PendingRevocation[] = [];
@@ -57,7 +57,7 @@ function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function sessionStore(): Storage | null {
+function sessionStore(): Storage {
   try {
     const store = window.sessionStorage;
     // Probe access as browsers can expose the object while denying reads/writes.
@@ -65,13 +65,21 @@ function sessionStore(): Storage | null {
     store.setItem(probe, "1");
     store.removeItem(probe);
     return store;
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error(SESSION_STORAGE_UNAVAILABLE, { cause: error });
   }
 }
 
 export function assertSessionStorageWritable(): void {
-  if (!sessionStore()) throw new Error(SESSION_PERSISTENCE_ERROR);
+  sessionStore();
+}
+
+function clearInvalidSession(): void {
+  try {
+    sessionStore().removeItem(SESSION_STORAGE_KEY);
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
+  }
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -89,6 +97,10 @@ function isBoundedString(value: unknown, max: number): value is string {
   );
 }
 
+export function isSessionToken(value: unknown): value is string {
+  return isBoundedString(value, MAX_SESSION_TOKEN_BYTES);
+}
+
 function isMatrixUserId(value: string, expectedServerName: string): boolean {
   if (utf8ByteLength(value) > MAX_MATRIX_ID_BYTES || !value.startsWith("@")) return false;
   const separator = value.indexOf(":", 1);
@@ -103,15 +115,11 @@ function isMatrixUserId(value: string, expectedServerName: string): boolean {
 }
 
 export function isRuntimeMatrixUserId(value: unknown): value is string {
-  try {
-    const { serverName } = getRuntimeSettings();
-    return (
-      isBoundedString(value, MAX_SESSION_IDENTITY_BYTES) &&
-      isMatrixUserId(value, serverName)
-    );
-  } catch {
-    return false;
-  }
+  const { serverName } = getRuntimeSettings();
+  return (
+    isBoundedString(value, MAX_SESSION_IDENTITY_BYTES) &&
+    isMatrixUserId(value, serverName)
+  );
 }
 
 export function isRuntimeMatrixDeviceId(value: unknown): value is string {
@@ -123,58 +131,67 @@ export function isRuntimeMatrixDeviceId(value: unknown): value is string {
 }
 
 function matchesRuntimeHomeserver(value: string): boolean {
+  const runtimeHomeserver = new URL(getRuntimeSettings().homeserver);
   try {
-    return new URL(value).toString() === new URL(getRuntimeSettings().homeserver).toString();
+    return new URL(value).toString() === runtimeHomeserver.toString();
   } catch {
     return false;
   }
 }
 
-function parseSession(raw: string | null, clearInvalid: boolean): Session | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<Session>;
-    const { homeserver, serverName } = getRuntimeSettings();
-    if (
-      isNonEmptyString(parsed.homeserver) &&
-      isBoundedString(parsed.userId, MAX_SESSION_IDENTITY_BYTES) &&
-      isMatrixUserId(parsed.userId, serverName) &&
-      isBoundedString(parsed.deviceId, MAX_SESSION_IDENTITY_BYTES) &&
-      isRuntimeMatrixDeviceId(parsed.deviceId) &&
-      isBoundedString(parsed.accessToken, MAX_SESSION_TOKEN_BYTES) &&
-      isBoundedString(parsed.refreshToken, MAX_SESSION_TOKEN_BYTES) &&
-      isBoundedString(parsed.oidcClientId, MAX_SESSION_IDENTITY_BYTES) &&
-      parsed.homeserver === homeserver
-    ) {
-      return parsed as Session;
+function failInvalidSession(cause: unknown, clearInvalid: boolean): never {
+  if (clearInvalid) {
+    try {
+      clearInvalidSession();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [cause, cleanupError],
+        "stored session is invalid and cleanup failed",
+        { cause },
+      );
     }
-    if (clearInvalid) {
-      try {
-        sessionStore()?.removeItem(SESSION_STORAGE_KEY);
-      } catch {
-        // A denied storage operation is handled as an absent session by the caller.
-      }
-    }
-    return null;
-  } catch {
-    if (clearInvalid) {
-      try {
-        sessionStore()?.removeItem(SESSION_STORAGE_KEY);
-      } catch {
-        // A denied storage operation is handled as an absent session by the caller.
-      }
-    }
-    return null;
   }
+  throw cause;
+}
+
+function parseSession(raw: string | null, clearInvalid: boolean): Session | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return failInvalidSession(error, clearInvalid);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return failInvalidSession(new Error("Stored session is invalid"), clearInvalid);
+  }
+  const session = parsed as Partial<Session>;
+  const { homeserver, serverName } = getRuntimeSettings();
+  if (
+    isNonEmptyString(session.homeserver) &&
+    isBoundedString(session.userId, MAX_SESSION_IDENTITY_BYTES) &&
+    isMatrixUserId(session.userId, serverName) &&
+    isBoundedString(session.deviceId, MAX_SESSION_IDENTITY_BYTES) &&
+    isRuntimeMatrixDeviceId(session.deviceId) &&
+    isSessionToken(session.accessToken) &&
+    isSessionToken(session.refreshToken) &&
+    isBoundedString(session.oidcClientId, MAX_SESSION_IDENTITY_BYTES) &&
+    session.homeserver === homeserver
+  ) {
+    return session as Session;
+  }
+  return failInvalidSession(new Error("Stored session is invalid"), clearInvalid);
 }
 
 export function loadSession(): Session | null {
+  const store = sessionStore();
+  let raw: string | null;
   try {
-    const store = sessionStore();
-    return store ? parseSession(store.getItem(SESSION_STORAGE_KEY), true) : null;
-  } catch {
-    return null;
+    raw = store.getItem(SESSION_STORAGE_KEY);
+  } catch (error) {
+    throw new Error(SESSION_STORAGE_UNAVAILABLE, { cause: error });
   }
+  return parseSession(raw, true);
 }
 
 /**
@@ -184,7 +201,6 @@ export function loadSession(): Session | null {
 export function saveSessionIfCurrent(session: Session, expected: Session | null): boolean {
   try {
     const store = sessionStore();
-    if (!store) return false;
     const current = parseSession(store.getItem(SESSION_STORAGE_KEY), false);
     if (expected === null ? current !== null : !current || !sessionsEqual(current, expected)) {
       return false;
@@ -194,28 +210,32 @@ export function saveSessionIfCurrent(session: Session, expected: Session | null)
       session.homeserver !== homeserver ||
       !isRuntimeMatrixUserId(session.userId) ||
       !isRuntimeMatrixDeviceId(session.deviceId) ||
-      !isBoundedString(session.accessToken, MAX_SESSION_TOKEN_BYTES) ||
-      !isBoundedString(session.refreshToken, MAX_SESSION_TOKEN_BYTES) ||
+      !isSessionToken(session.accessToken) ||
+      !isSessionToken(session.refreshToken) ||
       !isBoundedString(session.oidcClientId, MAX_SESSION_IDENTITY_BYTES)
     ) {
       return false;
     }
     store.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
     const persisted = parseSession(store.getItem(SESSION_STORAGE_KEY), false);
-    return Boolean(persisted && sessionsEqual(persisted, session));
-  } catch {
-    return false;
+    if (!persisted || !sessionsEqual(persisted, session)) {
+      throw new Error("Session was not persisted");
+    }
+    return true;
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
 export function clearSession(): boolean {
   try {
     const store = sessionStore();
-    if (!store) return false;
     store.removeItem(SESSION_STORAGE_KEY);
-    return store.getItem(SESSION_STORAGE_KEY) === null && clearOidcTransientStateFromStore(store);
-  } catch {
-    return false;
+    if (store.getItem(SESSION_STORAGE_KEY) !== null) throw new Error("Session was not cleared");
+    clearOidcTransientStateFromStore(store);
+    return true;
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
@@ -227,10 +247,14 @@ function clearOidcTransientStateFromStore(store: Storage): boolean {
     }
   }
   store.removeItem(OIDC_LOGIN_INTENT_STORAGE_KEY);
-  if (store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) !== null) return false;
+  if (store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) !== null) {
+    throw new Error("OIDC login intent was not cleared");
+  }
   for (let index = 0; index < store.length; index += 1) {
     const key = store.key(index);
-    if (key && OIDC_STATE_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) return false;
+    if (key && OIDC_STATE_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      throw new Error("OIDC transient state was not cleared");
+    }
   }
   return true;
 }
@@ -239,9 +263,9 @@ function clearOidcTransientStateFromStore(store: Storage): boolean {
 export function clearOidcTransientState(): boolean {
   try {
     const store = sessionStore();
-    return store ? clearOidcTransientStateFromStore(store) : false;
-  } catch {
-    return false;
+    return clearOidcTransientStateFromStore(store);
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
@@ -250,7 +274,7 @@ function isPendingRevocation(value: unknown): value is PendingRevocation {
   const parsed = value as Partial<PendingRevocation>;
   return (
     isNonEmptyString(parsed.homeserver) &&
-    isBoundedString(parsed.accessToken, MAX_SESSION_TOKEN_BYTES) &&
+    isSessionToken(parsed.accessToken) &&
     matchesRuntimeHomeserver(parsed.homeserver)
   );
 }
@@ -261,39 +285,42 @@ function sameRevocation(a: PendingRevocation, b: PendingRevocation): boolean {
 
 export function loadPendingRevocations(): PendingRevocation[] {
   const store = sessionStore();
-  if (!store) {
-    if (volatilePendingRevocations.length !== 0) return [...volatilePendingRevocations];
-    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-  }
+  let raw: string | null;
   try {
-    const parsed: unknown = JSON.parse(store.getItem(PENDING_REVOCATION_STORAGE_KEY) ?? "null");
-    // Accept the former single-record shape so an interrupted local checkout can
-    // migrate without ever treating the token as a live session.
-    const candidates = Array.isArray(parsed) ? parsed : parsed === null ? [] : [parsed];
-    if (
-      candidates.length <= MAX_PENDING_REVOCATIONS &&
-      candidates.every(isPendingRevocation)
-    ) {
-      const pending = candidates.filter(
-        (target, index, all) => all.findIndex((candidate) => sameRevocation(candidate, target)) === index,
-      );
-      const combined = [...pending, ...volatilePendingRevocations].filter(
-        (target, index, all) =>
-          all.findIndex((candidate) => sameRevocation(candidate, target)) === index,
-      );
-      if (combined.length > MAX_PENDING_REVOCATIONS) {
-        throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-      }
-      volatilePendingRevocations = combined;
-      return [...combined];
-    }
-  } catch {
-    // Treat malformed cleanup state as disposable, never as an active session.
+    raw = store.getItem(PENDING_REVOCATION_STORAGE_KEY);
+  } catch (error) {
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
   }
-  // Unknown cleanup state may represent an issued token that still needs revocation.
-  // Preserve it for manual site-data recovery and fail closed instead of silently
-  // deleting the only evidence that cleanup is incomplete.
-  throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
+  let parsed: unknown;
+  if (raw === null) {
+    parsed = [];
+  } else {
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, {
+      cause: new Error("Stored pending revocation state is invalid"),
+    });
+  }
+  const candidates = parsed;
+  if (!candidates.every(isPendingRevocation)) {
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, {
+      cause: new Error("Stored pending revocation state is invalid"),
+    });
+  }
+  const pending = candidates.filter(
+    (target, index, all) => all.findIndex((candidate) => sameRevocation(candidate, target)) === index,
+  );
+  const combined = [...pending, ...volatilePendingRevocations].filter(
+    (target, index, all) =>
+      all.findIndex((candidate) => sameRevocation(candidate, target)) === index,
+  );
+  volatilePendingRevocations = combined;
+  return [...combined];
 }
 
 export function loadPendingRevocation(): PendingRevocation | null {
@@ -305,86 +332,100 @@ export function savePendingRevocation(target: PendingRevocation): boolean {
   try {
     const pending = loadPendingRevocations();
     if (!pending.some((candidate) => sameRevocation(candidate, target))) pending.push(target);
-    if (pending.length > MAX_PENDING_REVOCATIONS) return false;
     volatilePendingRevocations = pending;
     const store = sessionStore();
-    if (!store) return false;
     const serialized = JSON.stringify(pending);
     store.setItem(PENDING_REVOCATION_STORAGE_KEY, serialized);
-    return store.getItem(PENDING_REVOCATION_STORAGE_KEY) === serialized;
-  } catch {
+    if (store.getItem(PENDING_REVOCATION_STORAGE_KEY) !== serialized) {
+      throw new Error("Pending revocation state was not persisted");
+    }
+    return true;
+  } catch (error) {
     if (!volatilePendingRevocations.some((candidate) => sameRevocation(candidate, target))) {
-      if (volatilePendingRevocations.length >= MAX_PENDING_REVOCATIONS) return false;
       volatilePendingRevocations = [...volatilePendingRevocations, target];
     }
-    return false;
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
 export function clearPendingRevocation(target?: PendingRevocation): boolean {
   try {
     const store = sessionStore();
-    if (!store) return false;
     const remaining = target
       ? loadPendingRevocations().filter((candidate) => !sameRevocation(candidate, target))
       : [];
     if (remaining.length === 0) {
       store.removeItem(PENDING_REVOCATION_STORAGE_KEY);
-      if (store.getItem(PENDING_REVOCATION_STORAGE_KEY) !== null) return false;
+      if (store.getItem(PENDING_REVOCATION_STORAGE_KEY) !== null) {
+        throw new Error("Pending revocation state was not cleared");
+      }
     } else {
       const serialized = JSON.stringify(remaining);
       store.setItem(PENDING_REVOCATION_STORAGE_KEY, serialized);
-      if (store.getItem(PENDING_REVOCATION_STORAGE_KEY) !== serialized) return false;
+      if (store.getItem(PENDING_REVOCATION_STORAGE_KEY) !== serialized) {
+        throw new Error("Pending revocation state was not persisted");
+      }
     }
     volatilePendingRevocations = remaining;
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
 export function saveOidcLoginIntent(intent: OidcLoginIntent): boolean {
   try {
     const store = sessionStore();
-    if (!store || !/^[\x21-\x7e]{1,512}$/.test(intent.state) || !Number.isFinite(intent.createdAt)) {
+    if (!/^[\x21-\x7e]{1,512}$/.test(intent.state) || !Number.isFinite(intent.createdAt)) {
       return false;
     }
     const serialized = JSON.stringify(intent);
     store.setItem(OIDC_LOGIN_INTENT_STORAGE_KEY, serialized);
-    return store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) === serialized;
-  } catch {
-    return false;
+    if (store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) !== serialized) {
+      throw new Error("OIDC login intent was not persisted");
+    }
+    return true;
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
 export function loadOidcLoginIntent(): OidcLoginIntent | null {
+  const store = sessionStore();
+  let raw: string | null;
   try {
-    const store = sessionStore();
-    if (!store) return null;
-    const parsed = JSON.parse(store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) ?? "null") as Partial<OidcLoginIntent>;
-    if (
-      typeof parsed.state === "string" &&
-      /^[\x21-\x7e]{1,512}$/.test(parsed.state) &&
-      typeof parsed.createdAt === "number" &&
-      Number.isFinite(parsed.createdAt) &&
-      parsed.createdAt <= Date.now() &&
-      Date.now() - parsed.createdAt <= MAX_OIDC_LOGIN_INTENT_AGE_MS
-    ) {
-      return { state: parsed.state, createdAt: parsed.createdAt };
-    }
-  } catch {
-    // Treat malformed intent as absent; it must never authorize a callback.
+    raw = store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY);
+  } catch (error) {
+    throw new Error(SESSION_STORAGE_UNAVAILABLE, { cause: error });
   }
-  return null;
+  if (raw === null) return null;
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Stored OIDC login intent is invalid");
+  }
+  const intent = parsed as Partial<OidcLoginIntent>;
+  if (
+    typeof intent.state === "string" &&
+    /^[\x21-\x7e]{1,512}$/.test(intent.state) &&
+    typeof intent.createdAt === "number" &&
+    Number.isFinite(intent.createdAt) &&
+    intent.createdAt <= Date.now() &&
+    Date.now() - intent.createdAt <= MAX_OIDC_LOGIN_INTENT_AGE_MS
+  ) {
+    return { state: intent.state, createdAt: intent.createdAt };
+  }
+  throw new Error("Stored OIDC login intent is invalid or expired");
 }
 
 export function clearOidcLoginIntent(): boolean {
   try {
     const store = sessionStore();
-    if (!store) return false;
     store.removeItem(OIDC_LOGIN_INTENT_STORAGE_KEY);
-    return store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) === null;
-  } catch {
-    return false;
+    if (store.getItem(OIDC_LOGIN_INTENT_STORAGE_KEY) !== null) {
+      throw new Error("OIDC login intent was not cleared");
+    }
+    return true;
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }

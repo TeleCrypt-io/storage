@@ -56,45 +56,93 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdk_tag=v0.5.26
+          source scripts/capture-diagnostics.sh
+          sdk_tag=v0.5.27
           sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
           sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
           sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"
           record_name="$sdk_tag.integrity.json"
           archive_name="$sdk_tag.tgz"
-          python3 scripts/bounded-command.py --stdout "$sdk_release" --stderr "$sdk_release.err" --max-stdout-bytes 131072 --max-stderr-bytes 131072 --timeout-seconds 120 --kill-after-seconds 5 -- gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/TeleCrypt-io/storage-sdk/releases/tags/$sdk_tag"
-          jq -e --arg tag "$sdk_tag" --arg record "$record_name" --arg archive "$archive_name" '(.tag_name==$tag and .draft==false and .prerelease==false and .immutable==true and (.target_commitish|type=="string" and test("^[0-9a-f]{40}$")) and (.assets|type=="array" and length==2) and all(.assets[]; type=="object" and (.id|type=="number" and .>0) and .state=="uploaded") and any(.assets[]; type=="object" and .name==$record and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))) and any(.assets[]; type=="object" and .name==$archive and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))))' "$sdk_release" >/dev/null
-          record_id="$(jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_size="$(jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .size | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_digest="$(jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$sdk_release")"
-          python3 scripts/bounded-command.py --stdout "$sdk_record" --stderr "$sdk_record.err" --max-stdout-bytes 104857600 --max-stderr-bytes 131072 --timeout-seconds 120 --kill-after-seconds 5 -- gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$record_id"
-          test "$(wc -c <"$sdk_record")" = "$record_size" -a "sha256:$(sha256sum "$sdk_record" | awk '{print $1}')" = "$record_digest" -a ! -s "$sdk_record.err"
-          archive_id="$(jq -er --arg name "$archive_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          python3 scripts/bounded-command.py --stdout "$sdk_archive" --stderr "$sdk_archive.err" --max-stdout-bytes 104857600 --max-stderr-bytes 131072 --timeout-seconds 120 --kill-after-seconds 5 -- gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$archive_id"
-          test ! -s "$sdk_archive.err"
-          test "$(jq -er '.commit' "$sdk_record")" = "$(jq -er '.target_commitish' "$sdk_release")"
-          node scripts/verify-storage-sdk-lock.mjs "$sdk_record" "$sdk_archive"
+          capture_response() {
+            local output="$1" status replay_stdout=true
+            shift
+            if test "${1:-}" = --binary; then
+              replay_stdout=false
+              shift
+            fi
+            local error="$output.err"
+            if run_captured "$output" "$error" 120 "$@"; then
+              status=0
+            else
+              status="$?"
+            fi
+            finish_capture "$status" "$replay_stdout" "$output" "$error"
+          }
+          replay_api_failure() {
+            local body="$1" error="$2"
+            shift 2
+            if test -f "$body.err"; then
+              replay_capture "$body" "$body.err" true "$error" "$@"
+            else
+              replay_capture "$body" "$error" true "$@"
+            fi
+          }
+          api_value() {
+            local body="$1" status replay_status=0 semantic_output="$1.semantic.out"
+            shift
+            local error="$body.semantic.err"
+            if "$@" >"$semantic_output" 2>"$error"; then
+              if cat "$error" >&2; then :; else replay_status=1; fi
+              if cat "$semantic_output"; then :; else replay_status=1; fi
+              return "$replay_status"
+            else
+              status="$?"
+            fi
+            replay_api_failure "$body" "$error" "$semantic_output" || replay_status="$?"
+            return "$status"
+          }
+          require_api_json() {
+            local body="$1" transport_error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
+            shift 2
+            if "$@" >"$semantic_output" 2>"$semantic_error"; then
+              if cat "$semantic_error" >&2; then :; else replay_status=1; fi
+              if cat "$semantic_output"; then :; else replay_status=1; fi
+              return "$replay_status"
+            else
+              status="$?"
+            fi
+            if test "$transport_error" = "$body.err"; then
+              replay_api_failure "$body" "$semantic_error" "$semantic_output" || replay_status="$?"
+            else
+              replay_api_failure "$body" "$semantic_error" "$semantic_output" "$transport_error" || replay_status="$?"
+            fi
+            return "$status"
+          }
+          capture_response "$sdk_release" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/TeleCrypt-io/storage-sdk/releases/tags/$sdk_tag"
+          require_api_json "$sdk_release" "$sdk_release.err" jq -e --arg tag "$sdk_tag" --arg record "$record_name" --arg archive "$archive_name" '(.tag_name==$tag and .draft==false and .prerelease==false and .immutable==true and (.target_commitish|type=="string" and test("^[0-9a-f]{40}$")) and (.assets|type=="array" and length==2) and all(.assets[]; type=="object" and (.id|type=="number" and .>0) and .state=="uploaded") and any(.assets[]; type=="object" and .name==$record and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))) and any(.assets[]; type=="object" and .name==$archive and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))))' "$sdk_release"
+          record_id="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
+          record_size="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .size | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
+          record_digest="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$sdk_release")"
+          capture_response "$sdk_record" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$record_id"
+          test "$(wc -c <"$sdk_record")" = "$record_size" -a "sha256:$(sha256sum "$sdk_record" | awk '{print $1}')" = "$record_digest"
+          archive_id="$(api_value "$sdk_release" jq -er --arg name "$archive_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
+          capture_response "$sdk_archive" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$archive_id"
+          record_commit="$(api_value "$sdk_record" jq -er '.commit' "$sdk_record")"
+          release_commit="$(api_value "$sdk_release" jq -er '.target_commitish' "$sdk_release")"
+          if test "$record_commit" != "$release_commit"; then
+            printf 'API semantic mismatch (SDK record commit differs from Release target)\n' >&2
+            replay_capture "$sdk_record" "$sdk_record.err" true "$sdk_release" "$sdk_release.err" || :
+            exit 1
+          fi
+          require_api_json "$sdk_record" "$sdk_record.err" node scripts/verify-storage-sdk-lock.mjs "$sdk_record" "$sdk_archive"
 
       - name: Install exact dependencies
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() {
-            local output="$1" seconds="$2" status error
-            shift 2
-            error="$output.err"
-            set +e
-            python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds "$seconds" --kill-after-seconds 5 -- "$@"
-            status="$?"
-            set -e
-            test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288
-            test "$status" = 0
-            test ! -s "$error"
-            ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"
-          }
           test "$(node --version)" = "v24.20.0"
           test "$(npm --version)" = "11.19.0"
-          bounded_command "$RUNNER_TEMP/storage-npm-ci.out" 600 npm ci --ignore-scripts --no-fund --no-audit --loglevel=error
+          timeout --signal=TERM --kill-after=5s 600s npm ci --ignore-scripts --no-fund --no-audit
 
       - name: Verify license and vendored UI provenance
         run: |
@@ -106,41 +154,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds "$seconds" --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-lint.out" 300 npm run lint --loglevel=error
+          timeout --signal=TERM --kill-after=5s 300s npm run lint
 
       - name: Verify security policy contract
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds "$seconds" --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-verify-security.out" 300 npm run verify:security --loglevel=error
+          timeout --signal=TERM --kill-after=5s 300s npm run verify:security
 
       - name: Unit tests
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds "$seconds" --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-test.out" 600 npm test --loglevel=error
+          timeout --signal=TERM --kill-after=5s 600s npm test
 
       - name: Test Pages archive validation
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds 300 --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-verify-archive.out" 300 npm run verify:archive --loglevel=error
+          timeout --signal=TERM --kill-after=5s 300s npm run verify:archive
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds "$seconds" --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-build.out" 600 npm run build --loglevel=error
+          timeout --signal=TERM --kill-after=5s 600s npm run build
 
       - name: Verify Pages packaging
         shell: bash
         run: |
           set -euo pipefail
-          bounded_command() { local output="$1" seconds="$2" status error; shift 2; error="$output.err"; set +e; python3 scripts/bounded-command.py --stdout "$output" --stderr "$error" --max-stdout-bytes 1048576 --max-stderr-bytes 524288 --timeout-seconds 300 --kill-after-seconds 5 -- "$@"; status="$?"; set -e; test "$(wc -c <"$output")" -le 1048576 -a "$(wc -c <"$error")" -le 524288; test "$status" = 0; test ! -s "$error"; ! grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$output" "$error"; }
-          bounded_command "$RUNNER_TEMP/storage-verify-package.out" 300 npm run verify:package --loglevel=error
-          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-bounded-command.py
+          timeout --signal=TERM --kill-after=5s 300s npm run verify:package

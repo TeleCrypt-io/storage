@@ -13,7 +13,7 @@ vi.mock("../lib/core", async () => {
   const actual = await vi.importActual<typeof import("../lib/core")>("../lib/core");
   return {
     ...actual,
-    isVaultOwner: vi.fn(),
+    getVaultOwnership: vi.fn(),
     getVaultDetails: vi.fn(),
     listMembers: vi.fn(),
     shareVault: vi.fn(),
@@ -30,15 +30,17 @@ function fakeStorage() {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(core.isVaultOwner).mockReturnValue(true);
+  vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
   vi.mocked(core.getVaultDetails).mockResolvedValue({
     name: "Vault",
     id: "!vault:localhost",
@@ -77,14 +79,16 @@ describe("MembersPanel access state", () => {
 
     expect(screen.queryByTestId("member-item")).not.toBeInTheDocument();
     expect(screen.getByTestId("members-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
+      "membership unavailable",
     );
   });
 
-  it("does not refresh or clear an invite after ownership is revoked in flight", async () => {
+  it("refreshes a confirmed invite after ownership is revoked in flight", async () => {
     const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
     let role = "owner";
-    vi.mocked(core.isVaultOwner).mockImplementation(() => role === "owner");
+    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
+      role === "owner" ? { status: "owner" } : { status: "not-owner" },
+    );
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
     const user = userEvent.setup();
@@ -101,43 +105,42 @@ describe("MembersPanel access state", () => {
     share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost", role: "editor" });
     await submit;
 
-    expect(core.listMembers).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(core.listMembers).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("share-submit")).not.toBeInTheDocument());
   });
 
-  it("rejects malformed member responses and does not render their identities", async () => {
-    vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: "@not valid:localhost", role: "viewer", membership: "join" },
-    ]);
+  it("surfaces a share failure after ownership is revoked in flight", async () => {
+    const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
+    vi.mocked(core.listMembers).mockResolvedValue([]);
+    vi.mocked(core.shareVault).mockReturnValue(share.promise);
+    const user = userEvent.setup();
     render(<MembersPanel vaultId="!vault:localhost" embedded />);
+    await screen.findByText("No members");
+    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost");
+    const submit = user.click(screen.getByTestId("share-submit"));
+    await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
+    share.reject(new Error("permission denied"));
+    await submit;
 
     expect(await screen.findByTestId("members-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
+      "permission denied",
     );
-    expect(screen.queryByTestId("member-item")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("share-submit")).not.toBeInTheDocument();
   });
 
-  it("accepts canonical plus localparts but rejects oversized Matrix IDs", async () => {
+  it("renders SDK-authoritative member identities", async () => {
     vi.mocked(core.listMembers).mockResolvedValue([
       { userId: "@bob+device:localhost", role: "viewer", membership: "join" },
     ]);
-    const view = render(<MembersPanel vaultId="!vault:localhost" embedded />);
+    render(<MembersPanel vaultId="!vault:localhost" embedded />);
     expect(await screen.findByTestId("member-item")).toHaveAttribute(
       "data-user-id",
       "@bob+device:localhost",
     );
-
-    vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: `@${"a".repeat(250)}:localhost`, role: "viewer", membership: "join" },
-    ]);
-    view.unmount();
-    render(<MembersPanel vaultId="!vault:localhost" embedded />);
-    expect(await screen.findByTestId("members-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
-    );
   });
 
-  it("validates mutation results and serializes overlapping invitations", async () => {
+  it("serializes overlapping invitations", async () => {
     const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
@@ -154,8 +157,6 @@ describe("MembersPanel access state", () => {
     await first;
     await second;
 
-    expect(await screen.findByTestId("members-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
-    );
+    expect(screen.queryByTestId("members-error")).not.toBeInTheDocument();
   });
 });

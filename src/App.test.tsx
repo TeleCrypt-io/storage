@@ -19,7 +19,7 @@ vi.mock("./lib/core", async () => {
     discoverOidcIssuer: vi.fn(),
     listVaults: vi.fn(),
     listPendingInvites: vi.fn(),
-    isVaultOwner: vi.fn(),
+    getVaultOwnership: vi.fn(),
     createVault: vi.fn(),
     joinVault: vi.fn(),
     declineInvite: vi.fn(),
@@ -48,9 +48,31 @@ vi.mock("./lib/oidcAuth", () => ({
   completeOidcLoginFromCallback: vi.fn(),
 }));
 
-vi.mock("./lib/revokeSession", () => ({
-  revokeMatrixSession: vi.fn(),
-}));
+vi.mock("./lib/revokeSession", async () => {
+  const session = await vi.importActual<typeof import("./lib/session")>("./lib/session");
+  const revokeMatrixSession = vi.fn();
+  const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
+    try {
+      await revokeMatrixSession(target, undefined, signal);
+      if (session.clearPendingRevocation(target)) return null;
+      const cleanupError = new Error("Session cleanup persistence failed");
+      return primary instanceof Error
+        ? new Error(primary.message, { cause: new AggregateError([primary, cleanupError]) })
+        : cleanupError;
+    } catch (error) {
+      const recorded = session.savePendingRevocation(target);
+      return new Error(
+        recorded && primary instanceof Error
+          ? primary.message
+          : recorded
+            ? "Session cleanup pending"
+            : "Session cleanup persistence failed",
+        { cause: primary ? new AggregateError([primary, error]) : error },
+      );
+    }
+  });
+  return { revokeMatrixSession, revokeOrRemember };
+});
 
 const SESSION = {
   homeserver: "http://localhost:8008",
@@ -130,17 +152,22 @@ async function openVault(
     files?: Array<{ id: string; name: string }>;
     subfolders?: Array<{ id: string; name: string }>;
     members?: Array<{ userId: string; role: string; membership: string }>;
+    vaultDetailsError?: unknown;
   },
 ) {
   vi.mocked(core.listFiles).mockImplementation(async () => opts?.files ?? []);
   vi.mocked(core.listSubfolders).mockImplementation(async () => opts?.subfolders ?? []);
   vi.mocked(core.listMembers).mockImplementation(async () => opts?.members ?? []);
-  vi.mocked(core.getVaultDetails).mockResolvedValue({
-    name,
-    id: "!vault:localhost",
-    createdAt: null,
-    memberCount: opts?.members?.length ?? 1,
-  });
+  if (opts?.vaultDetailsError) {
+    vi.mocked(core.getVaultDetails).mockRejectedValue(opts.vaultDetailsError);
+  } else {
+    vi.mocked(core.getVaultDetails).mockResolvedValue({
+      name,
+      id: "!vault:localhost",
+      createdAt: null,
+      memberCount: opts?.members?.length ?? 1,
+    });
+  }
   const { user } = await loginAndReachVaults([{ id: "!vault:localhost", name }]);
   await user.click(screen.getByRole("button", { name }));
   await screen.findByTestId("vault-detail");
@@ -151,7 +178,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   vi.clearAllMocks();
-  vi.mocked(core.isVaultOwner).mockReturnValue(true);
+  vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
   vi.mocked(core.getFileDetails).mockResolvedValue({
     name: "file.txt",
@@ -181,59 +208,109 @@ describe("formatElapsed", () => {
 });
 
 describe("formatOperationError", () => {
-  it("maps 413 / M_TOO_LARGE to user-facing upload message", () => {
-    expect(formatOperationError(new Error("HTTP 413"))).toBe("Server refused to create file");
-    expect(formatOperationError(new Error("M_TOO_LARGE"))).toBe("Server refused to create file");
-    expect(formatOperationError(new Error("Upload request body is too large"))).toBe(
-      "Server refused to create file",
+  it("preserves complete non-SDK operation details", () => {
+    expect(formatOperationError(new Error("HTTP 413"))).toContain("HTTP 413");
+    expect(formatOperationError(new Error("M_TOO_LARGE"))).toContain("M_TOO_LARGE");
+    expect(formatOperationError(new Error("Upload request body is too large"))).toContain(
+      "Upload request body is too large",
     );
   });
 
-  it("does not expose upstream error text or identifiers", () => {
-    expect(formatOperationError(new Error("HTTP 500 for !secret-room:localhost"))).toBe(
-      "The operation could not be completed. Please try again.",
+  it("preserves upstream details while redacting credentials and control characters", () => {
+    expect(formatOperationError(new Error("HTTP 500 for !secret-room:localhost"))).toContain(
+      "HTTP 500 for !secret-room:localhost",
     );
-    expect(formatOperationError(new Error("OIDC token exchange failed: provider body contains a token"))).toBe(
-      "The operation could not be completed. Please try again.",
+    expect(formatOperationError(new Error("OIDC token exchange failed: provider body contains a token"))).toContain(
+      "OIDC token exchange failed: provider body contains a token",
+    );
+    const detail = formatOperationError(new AggregateError([
+      new Error("backend detail\nAuthorization: Bearer access-token-secret"),
+      new Error("response access_token=refresh-token-secret"),
+    ], "backend request failed"));
+    expect(detail).toContain("backend detail\\u000a");
+    expect(detail).toContain("backend request failed");
+    expect(detail).toContain("[REDACTED]");
+    expect(detail).not.toContain("access-token-secret");
+    expect(detail).not.toContain("refresh-token-secret");
+
+    const nested = Object.assign(new Error("outer failure"), {
+      backend: {
+        response: {
+          status: 503,
+          access_token: "nested-token-secret",
+          userId: "@alice:localhost",
+          email: "alice@example.test",
+          privateKey: "private-key-secret",
+        },
+        detail: "complete nested detail",
+      },
+    });
+    const nestedDetail = formatOperationError(nested);
+    expect(nestedDetail).toContain("complete nested detail");
+    expect(nestedDetail).toContain("status=503");
+    expect(nestedDetail).toContain("access_token=[REDACTED]");
+    expect(nestedDetail).toContain("userId=[REDACTED]");
+    expect(nestedDetail).toContain("email=[REDACTED]");
+    expect(nestedDetail).toContain("privateKey=[REDACTED]");
+    expect(nestedDetail).not.toContain("nested-token-secret");
+    expect(nestedDetail).not.toContain("@alice:localhost");
+    expect(nestedDetail).not.toContain("alice@example.test");
+    expect(nestedDetail).not.toContain("private-key-secret");
+
+    const named = new Error("named failure");
+    named.name = "BackendFailure";
+    named.stack = "BackendFailure: named failure\n    at provider boundary";
+    const namedDetail = formatOperationError(named);
+    expect(namedDetail).toContain("name=BackendFailure");
+    expect(namedDetail).toContain("stack=BackendFailure: named failure\\u000a");
+
+    const throwingError = new Error("getter failure");
+    Object.defineProperties(throwingError, {
+      name: { get: () => { throw new Error("name getter failed"); } },
+      stack: { get: () => { throw new Error("stack getter failed"); } },
+    });
+    const throwingDetail = formatOperationError(throwingError);
+    expect(throwingDetail).toContain("name=[property unavailable: name getter failed]");
+    expect(throwingDetail).toContain("stack=[property unavailable: stack getter failed]");
+
+    const getterFailure = {};
+    Object.defineProperty(getterFailure, "details", {
+      get: () => {
+        throw new Error("diagnostic getter failed");
+      },
+    });
+    expect(formatOperationError(getterFailure)).toContain(
+      "details=[property unavailable: diagnostic getter failed]",
     );
   });
 
-  it("uses stable messages for persistence and retry failures", () => {
-    expect(formatOperationError(new Error("Session persistence failed"))).toBe(
-      "Sign-in could not be completed securely. Try again.",
+  it("preserves persistence and retry failure details", () => {
+    expect(formatOperationError(new Error("Session persistence failed"))).toContain(
+      "Session persistence failed",
     );
-    expect(formatOperationError(new Error("Session cleanup is pending"))).toBe(
-      "Previous sign-in cleanup is pending. Try again.",
+    expect(formatOperationError(new Error("Session cleanup is pending"))).toContain(
+      "Session cleanup is pending",
     );
-    expect(formatOperationError(new Error("Session cleanup could not be persisted"))).toBe(
-      "Sign-in cleanup could not be saved. Try again.",
+    expect(formatOperationError(new Error("Session cleanup could not be persisted"))).toContain(
+      "Session cleanup could not be persisted",
     );
-    expect(formatOperationError(new Error("Browser persistent storage is unavailable"))).toBe(
-      "Sign-in could not be completed securely. Try again.",
+    expect(formatOperationError(new Error("Browser persistent storage is unavailable"))).toContain(
+      "Browser persistent storage is unavailable",
     );
   });
 
-  it("maps current SDK error codes without relying on message capitalization", () => {
-    expect(
-      formatOperationError(Object.assign(new Error("file exceeds the 128 MiB limit"), { code: "FILE_TOO_LARGE" })),
-    ).toBe("File exceeds the 128 MiB limit.");
-    expect(
-      formatOperationError(
-        Object.assign(new Error("recovery restore failed; verify the Recovery Key and account"), {
-          code: "RECOVERY_RESTORE_FAILED",
-        }),
-      ),
-    ).toBe("The recovery key was rejected.");
-    expect(
-      formatOperationError(Object.assign(new Error("cannot delete a nonempty vault or folder"), {
-        code: "NON_EMPTY_TREE",
-      })),
-    ).toBe("Delete all files and empty child folders before deleting this vault or folder.");
-    expect(
-      formatOperationError(Object.assign(new Error("delete file failed after partial completion"), {
-        code: "MUTATION_PARTIAL",
-      })),
-    ).toBe("Deletion completed only partially. Refresh and retry to finish cleanup.");
+  it("preserves SDK failure and recovery instructions without reinterpreting the outcome", () => {
+    for (const error of [
+      new core.FileTooLargeError(),
+      new core.RecoveryRestoreError(),
+      new core.RecoverySetupAmbiguousError(),
+      new core.NonEmptyTreeError("!vault:localhost"),
+      new core.MutationPartialError("share vault", []),
+      new core.MutationOutcomeUnknownError("upload"),
+      new core.RoomCreationAmbiguousError(),
+    ]) {
+      expect(formatOperationError(error)).toContain(error.message);
+    }
   });
 });
 
@@ -268,36 +345,39 @@ describe("login", () => {
     expect(screen.getByTestId("no-vaults")).toBeInTheDocument();
   });
 
-  it("discards an incomplete OIDC session", () => {
+  it("reports an incomplete stored OIDC session", () => {
     sessionStorage.setItem(
       "telecrypt-io-ui:session",
       JSON.stringify({ ...SESSION, refreshToken: undefined }),
     );
     render(<App />);
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("Stored session is invalid");
     expect(screen.getByTestId("oidc-login")).toBeInTheDocument();
     expect(core.TeleCryptIOStorage.create).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).toBeNull();
   });
 
-  it("discards a saved session without a device identity before building a refresh adapter", () => {
+  it("reports a saved session without a device identity before building a refresh adapter", () => {
     const incomplete = { ...SESSION } as Record<string, unknown>;
     delete incomplete.deviceId;
     sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(incomplete));
 
     render(<App />);
 
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("Stored session is invalid");
     expect(screen.getByTestId("oidc-login")).toBeInTheDocument();
     expect(core.buildTokenRefreshFunction).not.toHaveBeenCalled();
     expect(core.TeleCryptIOStorage.createFromOidc).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).toBeNull();
   });
 
-  it("discards a saved session for a different runtime homeserver", () => {
+  it("reports a saved session for a different runtime homeserver", () => {
     sessionStorage.setItem(
       "telecrypt-io-ui:session",
       JSON.stringify({ ...SESSION, homeserver: "https://unexpected.example.test" }),
     );
     render(<App />);
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("Stored session is invalid");
     expect(screen.getByTestId("oidc-login")).toBeInTheDocument();
     expect(core.TeleCryptIOStorage.createFromOidc).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).toBeNull();
@@ -404,7 +484,7 @@ describe("login", () => {
     await user.click(screen.getByTestId("logout"));
 
     expect(screen.queryByTestId("current-user")).not.toBeInTheDocument();
-    expect(screen.getByTestId("auth-error")).toHaveTextContent("Sign-out could not be confirmed. Try again.");
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("Session revocation failed");
     expect(screen.getByTestId("auth-error")).not.toHaveTextContent("token-body-secret");
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).not.toBeNull();
     expect(storage.stopClient).toHaveBeenCalled();
@@ -417,7 +497,9 @@ describe("login", () => {
       JSON.stringify({ state: "two", createdAt: Date.now() }),
     );
     vi.mocked(oidcAuth.completeOidcLoginFromCallback).mockResolvedValue(SESSION);
-    const saveSpy = vi.spyOn(session, "saveSessionIfCurrent").mockReturnValue(false);
+    const saveSpy = vi.spyOn(session, "saveSessionIfCurrent").mockImplementation(() => {
+      throw new Error("session storage write failed");
+    });
 
     render(<App />);
 
@@ -429,8 +511,9 @@ describe("login", () => {
       ),
     );
     expect(await screen.findByTestId("auth-error")).toHaveTextContent(
-      "Sign-in could not be completed securely. Try again.",
+      "Session persistence failed",
     );
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("session storage write failed");
     expect(screen.getByTestId("oidc-login")).toBeInTheDocument();
     saveSpy.mockRestore();
     window.history.replaceState({}, "", "/");
@@ -493,7 +576,7 @@ describe("login", () => {
         vi.advanceTimersByTime(120_000);
         await Promise.resolve();
       });
-      expect(screen.getByTestId("auth-error")).toHaveTextContent("Connection timed out");
+      expect(screen.getByTestId("auth-error")).toHaveTextContent("Connection timed out after 120s");
       expect(vi.getTimerCount()).toBe(0);
 
       bootstrap.resolve(storage);
@@ -593,7 +676,7 @@ describe("vaults", () => {
   });
 
   it("hides destructive vault controls from non-owners", async () => {
-    vi.mocked(core.isVaultOwner).mockReturnValue(false);
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
     await loginAndReachVaults([{ id: "!shared:localhost", name: "Shared" }]);
 
     const item = screen.getByTestId("vault-item");
@@ -602,7 +685,7 @@ describe("vaults", () => {
   });
 
   it("hides access mutations from non-owners", async () => {
-    vi.mocked(core.isVaultOwner).mockReturnValue(false);
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
     await openVault("Shared", {
       members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
     });
@@ -617,7 +700,9 @@ describe("vaults", () => {
 
   it("rechecks ownership before an already-rendered access mutation", async () => {
     let role = "owner";
-    vi.mocked(core.isVaultOwner).mockImplementation(() => role === "owner");
+    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
+      role === "owner" ? { status: "owner" } : { status: "not-owner" },
+    );
     const user = await openVault("Shared", {
       members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
     });
@@ -808,7 +893,7 @@ describe("vault contents", () => {
     expect(screen.getByTestId("members-panel")).toBeInTheDocument();
   });
 
-  it("shows mapped error when upload fails with 413", async () => {
+  it("shows the complete backend error when upload fails with 413", async () => {
     const user = await openVault();
     vi.mocked(core.uploadFile).mockRejectedValue(new Error("HTTP 413 M_TOO_LARGE"));
 
@@ -816,7 +901,7 @@ describe("vault contents", () => {
     await user.upload(screen.getByTestId("file-input"), file);
 
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "Server refused to create file",
+      "HTTP 413 M_TOO_LARGE",
     );
   });
 
@@ -905,6 +990,15 @@ describe("vault contents", () => {
   it("shows the details panel when a vault is open", async () => {
     await openVault();
     expect(screen.getByTestId("details-panel")).toBeInTheDocument();
+  });
+
+  it("surfaces details-loading failures instead of rendering empty details", async () => {
+    await openVault("Docs", { vaultDetailsError: new Error("details unavailable") });
+
+    expect(await screen.findByTestId("details-error")).toHaveTextContent(
+      "details unavailable",
+    );
+    expect(screen.getByTestId("details-panel").querySelector(".details-list")).toBeNull();
   });
 
   it("uses vault details at the root and folder details for a selected subfolder", async () => {

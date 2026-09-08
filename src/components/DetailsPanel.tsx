@@ -4,7 +4,7 @@ import * as core from "../lib/core";
 import type { FileDetails, FolderDetails, VaultDetails } from "../lib/core";
 import { MembersPanel } from "./MembersPanel";
 import { withAccountSignal } from "../lib/accountOperation";
-import { isSafeRemoteName } from "../lib/fileLimits";
+import { formatOperationError } from "../lib/formatOperationError";
 
 function formatSize(bytes: number | null): string {
   if (bytes == null) return "—";
@@ -39,6 +39,7 @@ export function DetailsPanel({
   const { storage, accountSignal } = useStorage();
   const [fileDetails, setFileDetails] = useState<FileDetails | null>(null);
   const [treeDetails, setTreeDetails] = useState<(VaultDetails | FolderDetails) | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const activeSelection = selection && selection.treeId === treeId ? selection : null;
   const selectionKey = activeSelection
@@ -65,6 +66,7 @@ export function DetailsPanel({
     refreshRequestRef.current += 1;
     setFileDetails(null);
     setTreeDetails(null);
+    setError(null);
     setLoading(Boolean(storage));
     return () => {
       identityGenerationRef.current += 1;
@@ -99,7 +101,6 @@ export function DetailsPanel({
           }),
         );
         if (!isCurrent()) return;
-        if (!isSafeRemoteName(details.name)) throw new Error("Remote details are invalid");
         setFileDetails(details);
         setTreeDetails(null);
       } else {
@@ -120,14 +121,15 @@ export function DetailsPanel({
           );
         }
         if (!isCurrent()) return;
-        if (!isSafeRemoteName(details.name)) throw new Error("Remote details are invalid");
         setTreeDetails(details);
         setFileDetails(null);
       }
-    } catch {
+      if (isCurrent()) setError(null);
+    } catch (err) {
       if (!isCurrent()) return;
       setFileDetails(null);
       setTreeDetails(null);
+      setError(formatOperationError(err));
     } finally {
       if (isCurrent()) setLoading(false);
     }
@@ -163,6 +165,11 @@ export function DetailsPanel({
     <aside className="right-panel" data-testid="details-panel">
       <section className="details-section">
         <h3 className="panel-section-title">Details</h3>
+        {error && (
+          <p className="error" data-testid="details-error">
+            {error}
+          </p>
+        )}
         {loading && !fileDetails && !treeDetails ? (
           <p className="muted">Loading…</p>
         ) : showingFile && fileDetails ? (

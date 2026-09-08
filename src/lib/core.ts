@@ -2,22 +2,26 @@
  * Browser-facing SDK boundary.
  *
  * The repository is intentionally pinned to the exact published storage SDK
- * 0.5.26. The SDK barrel is the sole operation/OIDC authority; this boundary
- * adds only the two UI-specific recovery/ownership helpers without copying
- * SDK implementation into the UI.
+ * 0.5.27. The SDK barrel is the sole operation/OIDC authority; this boundary
+ * adds only the UI-specific ownership helper without copying SDK implementation
+ * into the UI.
  */
 import { getMyVaultRole, type TeleCryptIOStorage } from "@telecrypt-io/storage";
 
 export * from "@telecrypt-io/storage";
 
-export function isVaultOwner(storage: TeleCryptIOStorage | null, vaultId: string): boolean {
-  try {
-    return Boolean(storage && getMyVaultRole(storage, vaultId) === "owner");
-  } catch {
-    return false;
-  }
-}
+export type VaultOwnership =
+  | { status: "owner" }
+  | { status: "not-owner" }
+  | { status: "unknown"; error: unknown };
 
-export function isRecoverySetup(storage: TeleCryptIOStorage, signal?: AbortSignal): Promise<boolean> {
-  return storage.keys.isRecoverySetup(signal);
+export function getVaultOwnership(storage: TeleCryptIOStorage | null, vaultId: string): VaultOwnership {
+  if (!storage) return { status: "unknown", error: new Error("storage is unavailable") };
+  try {
+    const role = getMyVaultRole(storage, vaultId);
+    if (role === null) return { status: "unknown", error: new Error("vault ownership is unavailable") };
+    return role === "owner" ? { status: "owner" } : { status: "not-owner" };
+  } catch (error) {
+    return { status: "unknown", error };
+  }
 }

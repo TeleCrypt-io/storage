@@ -71,7 +71,7 @@ export function validateSharedUiRelease(release, archivePath) {
       throw new Error("shared UI Release archive bytes do not match its published asset");
     }
     const vendored = execFileSync("tar", ["-xOzf", archivePath, "--", "package/src/product.css"], {
-      maxBuffer: 1 * 1024 * 1024,
+      maxBuffer: Number.POSITIVE_INFINITY,
       timeout: 30_000,
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -14,14 +14,9 @@ import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import {
   FILE_TOO_LARGE_ERROR,
-  MAX_FILE_NAME_BYTES,
-  MAX_FILE_SIZE_BYTES,
-  isByteArray,
   isBytesWithinLimit,
   isFileWithinLimit,
   isSafeFileName,
-  hasSafeRemoteNames,
-  isSafeRemoteName,
   isSafeRelativePath,
   isUploadBatchWithinLimit,
   readFileWithinLimit,
@@ -123,7 +118,6 @@ async function ensurePath(
         core.listSubfolders(storage, currentId, { signal: signal ?? undefined }),
       );
       if (!isCurrent()) return null;
-      if (!hasSafeRemoteNames(subs)) throw new Error("Remote folder data is invalid");
       const existing = subs.find((s) => s.name === segment);
       if (existing) {
         currentId = existing.id;
@@ -133,7 +127,6 @@ async function ensurePath(
           core.createSubfolder(storage, currentId, segment, { signal: signal ?? undefined }),
         );
         if (!isCurrent()) return null;
-        if (!isSafeRemoteName(created.name)) throw new Error("Remote folder data is invalid");
         currentId = created.id;
       }
     } finally {
@@ -267,9 +260,6 @@ export function VaultContents({
       if (request !== refreshRequestRef.current || !isCurrentRefresh()) {
         return;
       }
-      if (!hasSafeRemoteNames(fileList) || !hasSafeRemoteNames(subList)) {
-        throw new Error("Remote file data is invalid");
-      }
       setFiles(fileList);
       setSubfolders(subList);
       setError(null);
@@ -321,6 +311,7 @@ export function VaultContents({
       if (isCurrentMutation(operation)) await refresh(operation);
     } catch (err) {
       if (isCurrentMutation(operation)) setError(formatOperationError(err));
+      return false;
     }
     return isCurrentMutation(operation);
   }
@@ -450,29 +441,6 @@ export function VaultContents({
     setBusy(true);
     setError(null);
     try {
-      const details = await withAccountSignal(
-        operation.signal,
-        () =>
-          core.getFileDetails(operation.storage, operation.treeId, f.id, {
-            signal: operation.signal ?? undefined,
-          }),
-      );
-      const size = details?.size;
-      if (
-        !details ||
-        !isSafeRemoteName(details.name) ||
-        typeof size !== "number" ||
-        !Number.isSafeInteger(size) ||
-        size < 0 ||
-        size > MAX_FILE_SIZE_BYTES
-      ) {
-        setError(
-          formatOperationError(
-            new Error(details?.size == null ? "File size could not be verified." : FILE_TOO_LARGE_ERROR),
-          ),
-        );
-        return;
-      }
       const result = await withAccountSignal(
         operation.signal,
         () =>
@@ -481,24 +449,7 @@ export function VaultContents({
           }),
       );
       if (!isCurrentMutation(operation)) return;
-      if (!isByteArray(result.bytes)) {
-        setError(formatOperationError(new Error("Downloaded file does not contain bytes")));
-        return;
-      }
-      if (!isBytesWithinLimit(result.bytes)) {
-        setError(formatOperationError(new Error(FILE_TOO_LARGE_ERROR)));
-        return;
-      }
       const bytes = Uint8Array.from(result.bytes);
-      if (
-        bytes.byteLength !== size ||
-        result.name !== details.name ||
-        !isSafeFileName(result.name) ||
-        (details.mimetype !== null && result.mimetype !== details.mimetype)
-      ) {
-        setError(formatOperationError(new Error("Downloaded file does not match its verified metadata")));
-        return;
-      }
       const blob = new Blob([bytes], { type: result.mimetype });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -573,20 +524,11 @@ export function VaultContents({
   }
 
   async function commitRename() {
-    if (!renaming || !renaming.name.trim()) {
-      if (renaming) setRenaming(null);
-      return;
-    }
+    if (!renaming) return;
     const operation = captureMutation();
     if (!operation) return;
     const target = renaming;
-    const targetName = target.name.trim();
-    if (!isSafeFileName(targetName)) {
-      releaseMutation(operation);
-      setRenaming(null);
-      setError(formatOperationError(new Error(INVALID_UPLOAD_ERROR)));
-      return;
-    }
+    const targetName = target.name;
     setBusy(true);
     setError(null);
     try {
@@ -598,14 +540,14 @@ export function VaultContents({
           }),
         );
       } else {
-        await withAccountSignal(
+        const renamed = await withAccountSignal(
           operation.signal,
           () => core.renameFolder(operation.storage, target.id, targetName, {
             signal: operation.signal ?? undefined,
           }),
         );
         if (!isCurrentMutation(operation)) return;
-        onFolderRenamed(target.id, targetName);
+        onFolderRenamed(renamed.id, renamed.name);
       }
       if (isCurrentMutation(operation)) await refresh(operation);
     } catch (err) {
@@ -635,7 +577,6 @@ export function VaultContents({
       if (!isCurrentMutation(operation)) return;
       await refresh(operation);
       if (isCurrentMutation(operation)) {
-        if (!isSafeRemoteName(created.name)) throw new Error("Remote folder data is invalid");
         setRenaming({ kind: "folder", id: created.id, name: created.name });
       }
     } catch (err) {
@@ -805,7 +746,6 @@ export function VaultContents({
                     {renaming?.kind === "folder" && renaming.id === sub.id ? (
                       <input
                         className="rename-input"
-                        maxLength={MAX_FILE_NAME_BYTES}
                         aria-label={`Rename folder ${sub.name}`}
                         value={renaming.name}
                         autoFocus
@@ -895,7 +835,6 @@ export function VaultContents({
                     {renaming?.kind === "file" && renaming.id === f.id ? (
                       <input
                         className="rename-input"
-                        maxLength={MAX_FILE_NAME_BYTES}
                         aria-label={`Rename file ${f.name}`}
                         value={renaming.name}
                         autoFocus

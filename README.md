@@ -1,7 +1,9 @@
 # storage.telecrypt.io
 
 The static React/Vite site served at [storage.telecrypt.io](https://storage.telecrypt.io).
-It consumes the exact published `@telecrypt-io/storage@0.5.26` browser library. The package lock
+Current TeleCrypt project facts and product decisions are maintained only in the canonical
+[`llms.txt`](https://telecrypt.io/llms.txt); this README documents this website implementation.
+It consumes the exact published `@telecrypt-io/storage@0.5.27` browser library. The package lock
 binds that dependency to the published tarball's integrity and the release workflows verify the
 immutable SDK release record and package bytes before dependency installation.
 Storage protocol, cryptography, and the command-line client deliberately live in their own
@@ -21,7 +23,7 @@ early CSP meta policy as a baseline. A header CSP remains required when the stat
 a header-capable edge. Vite relaxes only `connect-src` for its development server so the disposable
 localhost MAS/Synapse fixture remains usable. The page hostname is validated before the UI renders
 and derives the canonical HTTPS TeleCrypt backend URL (`storage.telecrypt.io` maps to
-`backend.telecrypt.io`; the future `storage.stage.telecrypt.io` maps to
+`backend.telecrypt.io`; `storage.stage.telecrypt.io` maps to
 `backend.stage.telecrypt.io`). The OIDC issuer
 is derived from that backend origin. The same
 exact compiled JS, CSS, and other application assets can therefore be served in both environments.
@@ -32,6 +34,9 @@ The device identifier is required when the shared refresh adapter is created, so
 remain bound to the Matrix device that owns the session.
 If session storage is unavailable, the UI fails closed and does not open an account. The only
 browser-persistent UI value is the non-secret OIDC client registration identifier.
+Operation failures retain complete error, response, and nested-cause details for the UI after
+credential redaction and control-character escaping; diagnostic output is not capped or replaced
+with a generic message because it is large or unfamiliar.
 
 The exact-tag workflow creates and verifies one exact published, non-prerelease immutable GitHub
 Release. Repository administrators must enforce both immutable releases and protection against

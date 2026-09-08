@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { beginOidcLogin, completeOidcLoginFromCallback } from "./oidcAuth";
 import { getRuntimeSettings } from "./buildConfig";
-import { OIDC_LOGIN_INTENT_STORAGE_KEY } from "./session";
+import { OIDC_LOGIN_INTENT_STORAGE_KEY, clearPendingRevocation } from "./session";
 import * as core from "./core";
 import * as revocation from "./revokeSession";
 
@@ -18,9 +18,27 @@ vi.mock("./core", async () => {
   };
 });
 
-vi.mock("./revokeSession", () => ({
-  revokeMatrixSession: vi.fn(),
-}));
+vi.mock("./revokeSession", async () => {
+  const session = await vi.importActual<typeof import("./session")>("./session");
+  const revokeMatrixSession = vi.fn();
+  const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
+    try {
+      await revokeMatrixSession(target, undefined, signal);
+      return session.clearPendingRevocation(target) ? null : new Error("Session cleanup persistence failed");
+    } catch (error) {
+      const recorded = session.savePendingRevocation(target);
+      return new Error(
+        recorded && primary instanceof Error
+          ? primary.message
+          : recorded
+            ? "Session cleanup pending"
+            : "Session cleanup persistence failed",
+        { cause: primary ? new AggregateError([primary, error]) : error },
+      );
+    }
+  });
+  return { revokeMatrixSession, revokeOrRemember };
+});
 
 const METADATA = {
   issuer: `${getRuntimeSettings().homeserver}/auth/`,
@@ -134,15 +152,15 @@ describe("beginOidcLogin stable device id", () => {
     expect(second.deviceId).toBe(opts.deviceId);
   });
 
-  it("does not reuse an oversized cached client identifier", async () => {
+  it("fails closed on an oversized cached client identifier", async () => {
     localStorage.setItem(
       "telecrypt-io-ui:oidc-client:" + METADATA.issuer,
       "x".repeat(513),
     );
 
-    await beginOidcLogin();
+    await expect(beginOidcLogin()).rejects.toThrow("OIDC client identifier is invalid or too large");
 
-    expect(core.registerClient).toHaveBeenCalled();
+    expect(core.registerClient).not.toHaveBeenCalled();
   });
 
   it("rejects discovery from an issuer other than the runtime-configured issuer", async () => {
@@ -258,7 +276,7 @@ describe("beginOidcLogin stable device id", () => {
   it("retries a pending token revocation before accepting a callback", async () => {
     sessionStorage.setItem(
       "telecrypt-io-ui:pending-revocation",
-      JSON.stringify({ homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" }),
+      JSON.stringify([{ homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" }]),
     );
     callback("?error=access_denied&state=two");
 
@@ -268,6 +286,47 @@ describe("beginOidcLogin stable device id", () => {
       accessToken: "old-access",
     }, undefined, undefined);
     expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toBeNull();
+  });
+
+  it("retains a pending marker when clearing its matching session fails", async () => {
+    const pending = { homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" };
+    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify(pending));
+    sessionStorage.setItem(
+      "telecrypt-io-ui:session",
+      JSON.stringify({
+        homeserver: getRuntimeSettings().homeserver,
+        userId: "@alice:localhost",
+        deviceId: "DEVICE1",
+        accessToken: pending.accessToken,
+        refreshToken: "old-refresh",
+        oidcClientId: "client-123",
+      }),
+    );
+    const removeItem = sessionStorage.removeItem.bind(sessionStorage);
+    vi.spyOn(sessionStorage, "removeItem").mockImplementation((key) => {
+      if (key !== "telecrypt-io-ui:session") removeItem(key);
+    });
+    vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
+      expect(clearPendingRevocation(target)).toBe(true);
+      return null;
+    });
+
+    await expect(beginOidcLogin()).rejects.toThrow("Session cleanup could not be persisted");
+    expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toContain("old-access");
+  });
+
+  it("retains a pending marker when cancellation follows remote revocation", async () => {
+    const controller = new AbortController();
+    const pending = { homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" };
+    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify(pending));
+    vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
+      expect(clearPendingRevocation(target)).toBe(true);
+      controller.abort();
+      return null;
+    });
+
+    await expect(beginOidcLogin(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toContain("old-access");
   });
 
   it("scrubs an error callback delivered in the URL fragment", async () => {
@@ -352,7 +411,9 @@ describe("beginOidcLogin stable device id", () => {
     } as unknown as Storage;
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: blocked });
     try {
-      await expect(completeOidcLoginFromCallback()).rejects.toThrow("Session persistence failed");
+      await expect(completeOidcLoginFromCallback()).rejects.toThrow(
+        "Browser session storage is unavailable",
+      );
       expect(core.completeAuthorizationCodeFlow).not.toHaveBeenCalled();
       expect(revocation.revokeMatrixSession).not.toHaveBeenCalled();
     } finally {
@@ -376,7 +437,7 @@ describe("beginOidcLogin stable device id", () => {
     } as never);
     vi.mocked(core.whoAmI).mockRejectedValue(new Error("whoami failed"));
 
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow("whoami failed");
+    await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in failed");
     expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
@@ -417,7 +478,7 @@ describe("beginOidcLogin stable device id", () => {
       },
     } as never);
 
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow("OIDC access token");
+    await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in failed");
     expect(core.whoAmI).not.toHaveBeenCalled();
     expect(revocation.revokeMatrixSession).not.toHaveBeenCalled();
   });
@@ -456,17 +517,42 @@ describe("beginOidcLogin stable device id", () => {
       },
     } as never);
     vi.mocked(core.whoAmI).mockRejectedValue(new Error("whoami failed"));
-    vi.mocked(revocation.revokeMatrixSession).mockRejectedValueOnce(new Error("network secret"));
+    const revocationError = new Error("network secret");
+    vi.mocked(revocation.revokeMatrixSession).mockRejectedValueOnce(revocationError);
 
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow("whoami failed");
+    let caught: unknown;
+    try {
+      await completeOidcLoginFromCallback();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).message).toBe("Sign-in failed");
+    expect((caught as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "Sign-in failed" }),
+      revocationError,
+    ]);
     expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toContain("new-access");
   });
 
   it("scrubs the callback before a failed code exchange", async () => {
     callback("?code=one&state=two");
-    vi.mocked(core.completeAuthorizationCodeFlow).mockRejectedValue(new Error("provider secret"));
+    const exchangeError = new Error("provider access_token=provider-token-secret\nfull detail");
+    vi.mocked(core.completeAuthorizationCodeFlow).mockRejectedValue(exchangeError);
 
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow("provider secret");
+    let caught: unknown;
+    try {
+      await completeOidcLoginFromCallback();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      message: "Sign-in failed",
+      cause: expect.objectContaining({
+        message: expect.stringContaining("provider access_token=[REDACTED]\\u000afull detail"),
+      }),
+    });
+    expect((caught as Error).cause).not.toBe(exchangeError);
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
   });
 

@@ -6,13 +6,7 @@ import * as core from "../lib/core";
 
 type AccountRecoveryStatus = "configured" | "not-configured" | "unknown";
 
-const MAX_RECOVERY_KEY_BYTES = 256;
 const RECOVERY_OPERATION_TIMEOUT_MS = 30_000;
-const MAX_RECOVERY_RESULT_KEYS = 1_000_000;
-
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
 
 function withRecoveryDeadline<T>(
   accountSignal: AbortSignal | null,
@@ -37,36 +31,6 @@ function withRecoveryDeadline<T>(
     if (timer !== undefined) clearTimeout(timer);
     accountSignal?.removeEventListener("abort", abort);
   });
-}
-
-function isRecoverySetupResult(value: unknown): value is { recoveryKey: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "recoveryKey" in value &&
-    typeof value.recoveryKey === "string" &&
-    value.recoveryKey.trim() !== "" &&
-    utf8ByteLength(value.recoveryKey) <= MAX_RECOVERY_KEY_BYTES &&
-    ![...value.recoveryKey].some(
-      (character) => character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f,
-    )
-  );
-}
-
-function isRecoveryRestoreResult(value: unknown): value is { imported: number; total: number } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "imported" in value &&
-    "total" in value &&
-    typeof value.imported === "number" &&
-    Number.isSafeInteger(value.imported) &&
-    typeof value.total === "number" &&
-    Number.isSafeInteger(value.total) &&
-    value.imported >= 0 &&
-    value.total >= value.imported &&
-    value.total <= MAX_RECOVERY_RESULT_KEYS
-  );
 }
 
 export function RecoveryPanel() {
@@ -133,9 +97,8 @@ export function RecoveryPanel() {
       const configured = await withRecoveryDeadline(
         accountSignal,
         "Recovery status check",
-        (signal) => core.isRecoverySetup(expectedStorage, signal),
+        (signal) => expectedStorage.keys.isRecoverySetup(signal),
       );
-      if (typeof configured !== "boolean") throw new Error("invalid recovery status");
       const nextStatus = configured ? "configured" : "not-configured";
       if (!isCurrent(expectedStorage, generation)) return;
       setRecoveryStatus(nextStatus);
@@ -143,14 +106,14 @@ export function RecoveryPanel() {
         setSetupIndeterminate(false);
         setError(null);
       }
-    } catch {
+    } catch (err) {
       if (isCurrent(expectedStorage, generation)) {
         setRecoveryStatus("unknown");
-        setError("Account recovery status is unavailable.");
+        setError(formatOperationError(err));
       }
     }
-  // isCurrent is intentionally a render-local identity guard.
-  // oxlint-disable-next-line react-hooks/exhaustive-deps
+    // isCurrent is intentionally a render-local identity guard.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [accountSignal, storage]);
 
   useEffect(() => {
@@ -172,20 +135,18 @@ export function RecoveryPanel() {
     setError(null);
     setConfirmedSaved(false);
     try {
-      const result = await withRecoveryDeadline(
-        accountSignal,
-        "Recovery setup",
-        (signal) => core.setupRecovery(expectedStorage, { signal, timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS }),
-      );
+      const result = await core.setupRecovery(expectedStorage, {
+        signal: accountSignal ?? undefined,
+        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
+      });
       if (!isCurrent(expectedStorage, generation)) return;
-      if (!isRecoverySetupResult(result)) throw new Error("Recovery setup returned an invalid key");
       setRecoveryKey(result.recoveryKey);
       setRecoveryStatus("configured");
-    } catch {
+    } catch (err) {
       if (isCurrent(expectedStorage, generation)) {
         setSetupIndeterminate(true);
         setRecoveryStatus("unknown");
-        setError("Recovery setup could not be confirmed. Reconcile recovery status before retrying.");
+        setError(formatOperationError(err));
       }
     } finally {
       if (identityGenerationRef.current === generation) mutationInFlightRef.current = false;
@@ -227,23 +188,12 @@ export function RecoveryPanel() {
     setError(null);
     setRestoreResult(null);
     const recoveryKey = restoreKeyInput.trim();
-    if (utf8ByteLength(recoveryKey) > MAX_RECOVERY_KEY_BYTES) {
-      setError("The Recovery Key is too large.");
-      setBusy(false);
-      if (identityGenerationRef.current === generation) mutationInFlightRef.current = false;
-      return;
-    }
     try {
-      const result = await withRecoveryDeadline(
-        accountSignal,
-        "Recovery restore",
-        (signal) => core.restoreRecovery(expectedStorage, recoveryKey, {
-          signal,
-          timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
-        }),
-      );
+      const result = await core.restoreRecovery(expectedStorage, recoveryKey, {
+        signal: accountSignal ?? undefined,
+        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
+      });
       if (!isCurrent(expectedStorage, generation)) return;
-      if (!isRecoveryRestoreResult(result)) throw new Error("Recovery restore returned an invalid result");
       setRestoreResult(result);
       setRestoreKeyInput("");
     } catch (err) {
@@ -281,7 +231,7 @@ export function RecoveryPanel() {
           <p className="error">
             {setupIndeterminate
               ? "Recovery setup could not be confirmed. Do not retry until the account status is reconciled."
-              : "Account recovery status is unavailable."}
+              : error ?? "Account recovery status is unavailable."}
           </p>
           {setupIndeterminate && (
             <button type="button" onClick={() => void handleReconcile()} disabled={busy} data-testid="reconcile-recovery">
@@ -354,7 +304,6 @@ export function RecoveryPanel() {
                 rows={4}
                 value={restoreKeyInput}
                 onChange={(e) => setRestoreKeyInput(e.target.value)}
-                maxLength={MAX_RECOVERY_KEY_BYTES}
                 data-testid="restore-key-input"
               />
               <button

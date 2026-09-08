@@ -10,7 +10,6 @@ import {
 import type { TeleCryptIOStorage } from "@telecrypt-io/storage";
 import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "../lib/buildConfig";
 import {
-  clearPendingRevocation,
   clearOidcTransientState,
   clearSession,
   loadPendingRevocations,
@@ -18,20 +17,21 @@ import {
   loadOidcLoginIntent,
   savePendingRevocation,
   saveSessionIfCurrent,
+  isSessionToken,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
   MAX_SESSION_IDENTITY_BYTES,
-  MAX_SESSION_TOKEN_BYTES,
   SESSION_PERSISTENCE_ERROR,
   type Session,
 } from "../lib/session";
 import { formatOperationError } from "../lib/formatOperationError";
+import { sanitizeDiagnosticError } from "../lib/errorDetails";
 import {
   classifyOidcCallback,
   readOidcCallbackParams,
   scrubOidcCallbackParams,
 } from "../lib/oidcCallback";
-import { revokeMatrixSession } from "../lib/revokeSession";
+import { revokeOrRemember } from "../lib/revokeSession";
 import { withAccountSignal } from "../lib/accountOperation";
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
@@ -51,17 +51,6 @@ const UI_OIDC_TIMEOUT_MS = 120_000;
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-function isSafeToken(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.trim() !== "" &&
-    utf8ByteLength(value) <= MAX_SESSION_TOKEN_BYTES &&
-    ![...value].some(
-      (character) => /\s/u.test(character) || character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f,
-    )
-  );
 }
 
 interface StorageContextValue {
@@ -111,18 +100,20 @@ function withTimeout<T>(
   return { promise: timed, cancel };
 }
 
-async function revokeOrRemember(
-  target: { homeserver: string; accessToken: string },
-  signal?: AbortSignal,
-): Promise<string | null> {
+function stopClient(client: TeleCryptIOStorage | null): unknown | undefined {
+  if (!client) return undefined;
   try {
-    await revokeMatrixSession(target, undefined, signal);
-    return clearPendingRevocation(target) ? null : SESSION_CLEANUP_PERSISTENCE_ERROR;
-  } catch {
-    return savePendingRevocation(target)
-      ? SESSION_CLEANUP_PENDING_ERROR
-      : SESSION_CLEANUP_PERSISTENCE_ERROR;
+    client.getClient().stopClient();
+    return undefined;
+  } catch (error) {
+    return error;
   }
+}
+
+function preserveFailure(primary: unknown | undefined, cleanup: unknown | undefined): unknown | undefined {
+  if (primary === undefined) return cleanup;
+  if (cleanup === undefined) return primary;
+  return new AggregateError([primary, cleanup], "operation and client cleanup failed", { cause: primary });
 }
 
 export function StorageProvider({ children }: { children: ReactNode }) {
@@ -256,25 +247,14 @@ export function StorageProvider({ children }: { children: ReactNode }) {
               authMetadata,
               s.oidcClientId,
               async (tokens) => {
-                const accessTokenIsSafe = isSafeToken(tokens.accessToken);
+                const accessTokenIsSafe = isSessionToken(tokens.accessToken);
                 const refreshTokenIsSafe =
-                  tokens.refreshToken === undefined || isSafeToken(tokens.refreshToken);
+                  tokens.refreshToken === undefined || isSessionToken(tokens.refreshToken);
                 if (!accessTokenIsSafe || !refreshTokenIsSafe) {
-                  if (accessTokenIsSafe) {
-                    const cleanupError = await revokeOrRemember(
-                      { homeserver, accessToken: tokens.accessToken },
-                      abortController.signal,
-                    );
-                    if (cleanupError) throw new Error(cleanupError);
-                  }
-                  throw new Error("OIDC token response is invalid or too large");
+                  throw new Error("OIDC token response is invalid");
                 }
                 if (gen !== connectGenRef.current) {
-                  const cleanupError = await revokeOrRemember(
-                    { homeserver, accessToken: tokens.accessToken },
-                    abortController.signal,
-                  );
-                  throw new Error(cleanupError ?? "Session is no longer active");
+                  throw new Error("Session is no longer active");
                 }
                 const previousSession = currentSession;
                 const nextSession = {
@@ -283,11 +263,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
                   refreshToken: tokens.refreshToken ?? currentSession.refreshToken,
                 };
                 if (!saveSessionIfCurrent(nextSession, previousSession)) {
-                  const cleanupError = await revokeOrRemember(
-                    { homeserver, accessToken: tokens.accessToken },
-                    abortController.signal,
-                  );
-                  throw new Error(cleanupError ?? "Session is no longer active");
+                  throw new Error("Session is no longer active");
                 }
                 currentSession = nextSession;
                 if (gen === connectGenRef.current) {
@@ -302,7 +278,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
               refreshSignal?: AbortSignal,
             ) => {
               if (
-                !isSafeToken(refreshToken)
+                !isSessionToken(refreshToken)
               ) {
                 throw new Error("OIDC refresh token is invalid or too large");
               }
@@ -333,7 +309,8 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           }
           if (!client) throw new Error("Encrypted client was not created");
           if (gen !== connectGenRef.current) {
-            client.getClient().stopClient();
+            const cleanupError = stopClient(client);
+            if (cleanupError) appendLog(`Failed: ${formatOperationError(cleanupError)}`);
             return;
           }
           log("Connected.");
@@ -346,9 +323,12 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           setSession(currentSession);
           setStatus("ready");
         } catch (err) {
-          client?.getClient().stopClient();
-          if (gen !== connectGenRef.current) return;
-          const msg = formatOperationError(err);
+          const failure = preserveFailure(err, stopClient(client));
+          if (gen !== connectGenRef.current) {
+            if (failure !== err) appendLog(`Failed: ${formatOperationError(failure)}`);
+            return;
+          }
+          const msg = formatOperationError(failure);
           appendLog(`Failed: ${msg}`);
           setError(msg);
           setStatus("error");
@@ -382,13 +362,13 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     [appendLog, appendOrReplaceDownloadLog, beginConnecting],
   );
 
-  const invalidateActiveConnection = useCallback(() => {
+  const invalidateActiveConnection = useCallback((): unknown | undefined => {
     connectGenRef.current += 1;
     connectCleanupRef.current?.();
     connectCleanupRef.current = null;
     const currentStorage = storageRef.current;
     storageRef.current = null;
-    currentStorage?.getClient().stopClient();
+    const cleanupError = stopClient(currentStorage);
     connectInflightRef.current = null;
     connectStartedAtRef.current = null;
     accountAbortRef.current?.abort();
@@ -402,13 +382,17 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     setStorage(null);
     setSession(null);
     setConnectLog([]);
+    return cleanupError;
   }, []);
 
-  const resetConnection = useCallback((clearPersistedSession: boolean) => {
-    invalidateActiveConnection();
+  const resetConnection = useCallback((clearPersistedSession: boolean, primary?: unknown) => {
+    const cleanupError = invalidateActiveConnection();
+    const activeFailure = preserveFailure(primary, cleanupError);
     const persistedSessionCleared = !clearPersistedSession || clearSession();
-    setStatus(persistedSessionCleared ? "signed-out" : "error");
-    setError(persistedSessionCleared ? null : formatOperationError(new Error(SESSION_PERSISTENCE_ERROR)));
+    const persistenceError = persistedSessionCleared ? undefined : new Error(SESSION_PERSISTENCE_ERROR);
+    const failure = preserveFailure(activeFailure, persistenceError);
+    setStatus(failure ? "error" : "signed-out");
+    setError(failure ? formatOperationError(failure) : null);
   }, [invalidateActiveConnection]);
 
   useEffect(() => {
@@ -418,7 +402,8 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       connectCleanupRef.current = null;
       const currentStorage = storageRef.current;
       storageRef.current = null;
-      currentStorage?.getClient().stopClient();
+      const cleanupError = stopClient(currentStorage);
+      if (cleanupError) throw cleanupError;
       accountAbortRef.current?.abort();
       accountAbortRef.current = null;
       oidcAbortRef.current?.abort();
@@ -435,8 +420,8 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       let pendingCleanup: number;
       try {
         pendingCleanup = loadPendingRevocations().length;
-      } catch {
-        setError(formatOperationError(new Error(SESSION_CLEANUP_PERSISTENCE_ERROR)));
+      } catch (error) {
+        setError(formatOperationError(error));
         setStatus("error");
         return;
       }
@@ -445,7 +430,14 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         setStatus("error");
         return;
       }
-      const existing = loadSession();
+      let existing: Session | null;
+      try {
+        existing = loadSession();
+      } catch (error) {
+        setError(formatOperationError(error));
+        setStatus("error");
+        return;
+      }
       if (existing) {
         if (storageRef.current && sessionRef.current) setStatus("ready");
         else void connect(existing);
@@ -458,29 +450,52 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       scrubOidcCallbackParams(window.location);
       // A malformed/spurious callback must not clear a live session, but it must
       // not leave an old one-time PKCE transaction available for replay either.
-      const cleared = clearOidcTransientState();
-      if (!cleared) {
-        setError(formatOperationError(new Error(SESSION_PERSISTENCE_ERROR)));
+      try {
+        clearOidcTransientState();
+      } catch (error) {
+        setError(formatOperationError(error));
         setStatus("error");
-      } else restoreExistingSession();
+        return;
+      }
+      restoreExistingSession();
       return;
     }
     if (callbackKind === "success" || callbackKind === "error") {
       const callbackParams = readOidcCallbackParams(window.location);
       const callbackState = callbackParams.get("state");
-      const callbackIntent = loadOidcLoginIntent();
+      let callbackIntent: ReturnType<typeof loadOidcLoginIntent>;
+      try {
+        callbackIntent = loadOidcLoginIntent();
+      } catch (error) {
+        scrubOidcCallbackParams(window.location);
+        let failure: unknown = error;
+        try {
+          clearOidcTransientState();
+        } catch (cleanupError) {
+          failure = preserveFailure(error, cleanupError);
+        }
+        setError(formatOperationError(failure));
+        setStatus("error");
+        return;
+      }
       if (!callbackIntent || !callbackState || callbackState !== callbackIntent.state) {
         scrubOidcCallbackParams(window.location);
-        const cleared = clearOidcTransientState();
-        if (!cleared) {
-          setError(formatOperationError(new Error(SESSION_PERSISTENCE_ERROR)));
+        try {
+          clearOidcTransientState();
+        } catch (error) {
+          setError(formatOperationError(error));
           setStatus("error");
           return;
         }
         restoreExistingSession();
         return;
       }
-      invalidateActiveConnection();
+      const connectionCleanupError = invalidateActiveConnection();
+      if (connectionCleanupError) {
+        setError(formatOperationError(connectionCleanupError));
+        setStatus("error");
+        return;
+      }
       const callbackGeneration = connectGenRef.current;
       const callbackAbortController = new AbortController();
       oidcAbortRef.current = callbackAbortController;
@@ -498,25 +513,33 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         )
         .then(async (s) => {
           if (callbackGeneration !== connectGenRef.current) {
-            await revokeOrRemember(s, callbackAbortController.signal);
+            const cleanupError = await revokeOrRemember(s, callbackAbortController.signal);
+            if (cleanupError) appendLog(`Failed: ${formatOperationError(cleanupError)}`);
             return;
           }
           appendLog(`Signed in as ${s.userId}`);
           let saved = false;
+          let saveError: unknown;
           try {
             saved = saveSessionIfCurrent(s, null);
-          } catch {
+          } catch (error) {
+            saveError = error;
             saved = false;
           }
           if (!saved) {
-            const cleanupError =
-              (await revokeOrRemember(s, callbackAbortController.signal)) ?? SESSION_PERSISTENCE_ERROR;
-            if (callbackGeneration !== connectGenRef.current) return;
-            resetConnection(false);
-            setError(
-              formatOperationError(new Error(cleanupError)),
+            const primary = saveError === undefined
+              ? new Error(SESSION_PERSISTENCE_ERROR)
+              : new Error(SESSION_PERSISTENCE_ERROR, { cause: sanitizeDiagnosticError(saveError) });
+            const cleanupError = await revokeOrRemember(
+              s,
+              callbackAbortController.signal,
+              primary,
             );
-            setStatus("error");
+            if (callbackGeneration !== connectGenRef.current) {
+              if (cleanupError) appendLog(`Failed: ${formatOperationError(cleanupError)}`);
+              return;
+            }
+            resetConnection(false, cleanupError ?? primary);
             return;
           }
           return connect(s);
@@ -531,9 +554,6 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         .finally(() => {
           if (oidcAbortRef.current === callbackAbortController) oidcAbortRef.current = null;
         });
-      // Intentionally run once on mount only; loginWithOidc() drives
-      // subsequent connections explicitly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
       return;
     }
     restoreExistingSession();
@@ -544,7 +564,14 @@ export function StorageProvider({ children }: { children: ReactNode }) {
 
   const loginWithOidc = useCallback(
     async () => {
-      invalidateActiveConnection();
+      const connectionCleanupError = invalidateActiveConnection();
+      if (connectionCleanupError) {
+        const msg = formatOperationError(connectionCleanupError);
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
+        setStatus("error");
+        return;
+      }
       setLogoutPending(false);
       beginConnecting("Redirecting to sign-in…");
       const loginAbortController = new AbortController();
@@ -565,9 +592,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         // The client was stopped before cleanup began. Keep the persisted session or pending
         // revocation record for the next retry, but never present a possibly revoked client as
         // live after a replacement-login failure.
-        resetConnection(false);
-        setError(msg);
-        setStatus("error");
+        resetConnection(false, err);
       } finally {
         if (oidcAbortRef.current === loginAbortController) oidcAbortRef.current = null;
       }
@@ -586,7 +611,13 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    invalidateActiveConnection();
+    const connectionCleanupError = invalidateActiveConnection();
+    if (connectionCleanupError) {
+      const msg = formatOperationError(connectionCleanupError);
+      setError(msg);
+      setStatus("error");
+      return;
+    }
     const generation = connectGenRef.current;
     const logoutController = new AbortController();
     setLogoutPending(true);
@@ -594,8 +625,9 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     const operation = (async () => {
       let current = target;
       try {
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-          await revokeMatrixSession(current, undefined, logoutController.signal);
+        for (;;) {
+          const cleanupError = await revokeOrRemember(current, logoutController.signal);
+          if (cleanupError) throw cleanupError;
           // A new login or connection may have started while the network request was in flight.
           // Never inspect or revoke that newer session as if it were a rotated token from logout.
           if (generation !== connectGenRef.current) return;
@@ -604,26 +636,30 @@ export function StorageProvider({ children }: { children: ReactNode }) {
             !latest ||
             (latest.accessToken === current.accessToken && latest.refreshToken === current.refreshToken)
           ) {
-            if (!clearPendingRevocation(current)) {
-              throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-            }
             resetConnection(true);
             setLogoutPending(false);
             return;
           }
-          if (!clearPendingRevocation(current)) {
-            throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-          }
           current = latest;
         }
-        if (!savePendingRevocation(current)) throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-        throw new Error(SESSION_CLEANUP_PENDING_ERROR);
       } catch (err) {
-        const recorded = savePendingRevocation(current);
+        let recorded = false;
+        let persistenceError: unknown;
+        try {
+          recorded = savePendingRevocation(current);
+        } catch (saveError) {
+          persistenceError = saveError;
+        }
         if (generation === connectGenRef.current) {
-          resetConnection(false);
-          setError(formatOperationError(recorded ? err : new Error(SESSION_CLEANUP_PERSISTENCE_ERROR)));
-          setStatus("error");
+          resetConnection(
+            false,
+            recorded
+              ? err
+              : preserveFailure(
+                err,
+                persistenceError ?? new Error(SESSION_CLEANUP_PERSISTENCE_ERROR),
+              ),
+          );
           setLogoutPending(false);
         }
         return;

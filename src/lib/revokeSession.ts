@@ -1,11 +1,15 @@
 import { getRuntimeSettings } from "./buildConfig";
+import {
+  clearPendingRevocation,
+  isSessionToken,
+  savePendingRevocation,
+  SESSION_CLEANUP_PENDING_ERROR,
+  SESSION_CLEANUP_PERSISTENCE_ERROR,
+} from "./session";
+import { sanitizeDiagnosticError, sanitizeDiagnosticText } from "./errorDetails";
 
 const SESSION_REVOKE_TIMEOUT_MS = 10_000;
-const MAX_REVOCATION_TOKEN_BYTES = 8192;
-
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
+const RESPONSE_CLEANUP_TIMEOUT_MS = 5_000;
 
 export type SessionRevocationTarget = {
   homeserver: string;
@@ -14,11 +18,62 @@ export type SessionRevocationTarget = {
 
 export type SessionRevocationFailure = "failed" | "timed-out";
 
+export async function revokeOrRemember(
+  target: SessionRevocationTarget,
+  signal?: AbortSignal,
+  primaryError?: unknown,
+): Promise<Error | null> {
+  const failure = (message: string, causes: unknown[]): Error => {
+    const filtered = causes
+      .filter((cause): cause is unknown => cause !== undefined)
+      .map((cause) => sanitizeDiagnosticError(cause));
+    if (filtered.length === 1) return new Error(message, { cause: filtered[0] });
+    return new Error(
+      message,
+      {
+        cause: new AggregateError(filtered, "session revocation and cleanup failed", {
+          cause: filtered[0],
+        }),
+      },
+    );
+  };
+
+  try {
+    await revokeMatrixSession(target, undefined, signal);
+    if (clearPendingRevocation(target)) return null;
+    return failure(primaryError instanceof Error ? primaryError.message : SESSION_CLEANUP_PERSISTENCE_ERROR, [
+      primaryError,
+      new Error(SESSION_CLEANUP_PERSISTENCE_ERROR),
+    ]);
+  } catch (error) {
+    let recorded = false;
+    let persistenceError: unknown;
+    try {
+      recorded = savePendingRevocation(target);
+    } catch (saveError) {
+      persistenceError = saveError;
+    }
+    return failure(
+      recorded && primaryError instanceof Error
+        ? primaryError.message
+        : recorded
+          ? SESSION_CLEANUP_PENDING_ERROR
+          : SESSION_CLEANUP_PERSISTENCE_ERROR,
+      [
+        primaryError,
+        error,
+        persistenceError,
+        ...(recorded ? [] : [new Error(SESSION_CLEANUP_PERSISTENCE_ERROR)]),
+      ],
+    );
+  }
+}
+
 export class SessionRevocationError extends Error {
   readonly reason: SessionRevocationFailure;
 
-  constructor(reason: SessionRevocationFailure) {
-    super(reason === "timed-out" ? "Session revocation timed out" : "Session revocation failed");
+  constructor(reason: SessionRevocationFailure, options?: ErrorOptions) {
+    super(reason === "timed-out" ? "Session revocation timed out" : "Session revocation failed", options);
     this.name = "SessionRevocationError";
     this.reason = reason;
   }
@@ -42,40 +97,64 @@ function logoutEndpoint(homeserver: string): string {
   return new URL("/_matrix/client/v3/logout", runtimeHomeserver).toString();
 }
 
-function cancelResponseBody(response: Response): void {
+async function cancelResponseBody(response: Response): Promise<void> {
+  if (!response.body) return;
+  const cancellation = Promise.resolve().then(() => response.body!.cancel());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => {
+        reject(new Error("session revocation response cleanup timed out"));
+      },
+      RESPONSE_CLEANUP_TIMEOUT_MS,
+    );
+  });
   try {
-    void response.body?.cancel().catch(() => undefined);
-  } catch {
-    // Cleanup is best effort; the revocation result remains user-safe.
+    await Promise.race([cancellation, deadline]);
+  } catch (error) {
+    throw new SessionRevocationError("failed", { cause: sanitizeDiagnosticError(error) });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function readResponseFailure(response: Response): Promise<Error> {
+  const status = `HTTP ${response.status}${response.statusText ? ` ${sanitizeDiagnosticText(response.statusText)}` : ""}`;
+  try {
+    const body = await response.text();
+    return new Error(`${status}: ${body === "" ? "(empty response body)" : sanitizeDiagnosticText(body)}`);
+  } catch (error) {
+    const failures: unknown[] = [sanitizeDiagnosticError(error)];
+    try {
+      await cancelResponseBody(response);
+    } catch (cleanupError) {
+      failures.push(sanitizeDiagnosticError(cleanupError));
+    }
+    return new Error(`${status}: response body could not be read`, {
+      cause: failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures, "response body read and cleanup failed", { cause: failures[0] }),
+    });
   }
 }
 
 /**
- * Revokes the Matrix access token without sending a request body or reading an
- * untrusted response body. Failure is intentionally represented by a stable,
- * user-safe error so upstream server text never reaches the UI.
+ * Revokes the Matrix access token without sending a request body. Failed
+ * responses retain their complete redacted status and body as the cause of a
+ * stable revocation error so the UI can surface the actual backend failure.
  */
 export async function revokeMatrixSession(
   target: SessionRevocationTarget,
   fetchImpl: typeof fetch = fetch,
   externalSignal?: AbortSignal,
 ): Promise<void> {
-  if (
-    typeof target.accessToken !== "string" ||
-    target.accessToken.trim() === "" ||
-    utf8ByteLength(target.accessToken) > MAX_REVOCATION_TOKEN_BYTES ||
-    [...target.accessToken].some(
-      (character) =>
-        /\s/u.test(character) || character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f,
-    )
-  ) {
+  if (!isSessionToken(target.accessToken)) {
     throw new SessionRevocationError("failed");
   }
 
   const endpoint = logoutEndpoint(target.homeserver);
   const controller = new AbortController();
   let timedOut = false;
-  let externallyAborted = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -89,9 +168,13 @@ export async function revokeMatrixSession(
     rejectExternal = reject;
   });
   const abortFromCaller = (): void => {
-    externallyAborted = true;
     controller.abort(externalSignal?.reason);
-    rejectExternal(new SessionRevocationError("failed"));
+    rejectExternal(new SessionRevocationError(
+      "failed",
+      externalSignal?.reason === undefined
+        ? undefined
+        : { cause: sanitizeDiagnosticError(externalSignal.reason) },
+    ));
   };
   if (externalSignal?.aborted) abortFromCaller();
   else externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -104,33 +187,30 @@ export async function revokeMatrixSession(
       signal: controller.signal,
     }),
   );
-  // A response can arrive after the timeout/caller race has already rejected.
-  // Observe that late response and release its body without awaiting it.
-  void request.then(
-    (response) => {
-      if (timedOut || externallyAborted) cancelResponseBody(response);
-    },
-    () => undefined,
-  );
-
   try {
     const response = await Promise.race([request, timeout, externalAbort]);
     if (response.redirected || response.url !== endpoint) {
-      cancelResponseBody(response);
-      throw new SessionRevocationError("failed");
+      const failure = new SessionRevocationError("failed", {
+        cause: await readResponseFailure(response),
+      });
+      throw failure;
     }
     // Matrix returns 401/M_UNKNOWN_TOKEN when this device token was already
     // invalidated (for example, the first logout succeeded but its response was
     // lost). That is a definitive least-privilege outcome, so retry is
     // idempotent without reading or trusting the response body.
     if (response.status !== 200 && response.status !== 204 && response.status !== 401) {
-      cancelResponseBody(response);
-      throw new SessionRevocationError("failed");
+      const failure = new SessionRevocationError("failed", {
+        cause: await readResponseFailure(response),
+      });
+      throw failure;
     }
-    cancelResponseBody(response);
+    await cancelResponseBody(response);
   } catch (error) {
     if (error instanceof SessionRevocationError) throw error;
-    throw new SessionRevocationError(timedOut ? "timed-out" : "failed");
+    throw new SessionRevocationError(timedOut ? "timed-out" : "failed", {
+      cause: sanitizeDiagnosticError(error),
+    });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     externalSignal?.removeEventListener("abort", abortFromCaller);

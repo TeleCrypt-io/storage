@@ -17,7 +17,7 @@ describe("page-bound environment", () => {
     expect(getRuntimeSettings()).toEqual({ homeserver: "https://backend.telecrypt.io", serverName: "telecrypt.io" });
   });
 
-  it("maps the future stage hosting to the matching backend", async () => {
+  it("maps stage hosting to the matching backend", async () => {
     setOrigin("https://storage.stage.telecrypt.io");
     expect(getRuntimeSettings()).toEqual({
       homeserver: "https://backend.stage.telecrypt.io",

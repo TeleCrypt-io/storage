@@ -7,7 +7,6 @@ export const MAX_UPLOAD_BATCH_BYTES = 256 * 1024 * 1024;
 export const MAX_FILE_NAME_BYTES = 255;
 export const MAX_RELATIVE_PATH_BYTES = 4096;
 export const MAX_RELATIVE_PATH_SEGMENTS = 32;
-export const MAX_REMOTE_NAMED_ITEMS = 10_000;
 
 const encoder = new TextEncoder();
 
@@ -33,22 +32,6 @@ function isSafePathSegment(segment: string): boolean {
 
 export function isSafeFileName(name: string): boolean {
   return isSafePathSegment(name);
-}
-
-export function isSafeRemoteName(value: unknown): value is string {
-  return typeof value === "string" && isSafeFileName(value);
-}
-
-/** Reject malformed or unbounded named records before their names reach the DOM. */
-export function hasSafeRemoteNames(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length > MAX_REMOTE_NAMED_ITEMS) return false;
-  return value.every(
-    (item) =>
-      typeof item === "object" &&
-      item !== null &&
-      "name" in item &&
-      isSafeRemoteName((item as { name?: unknown }).name),
-  );
 }
 
 export function isSafeRelativePath(path: string): boolean {
@@ -80,12 +63,4 @@ export async function readFileWithinLimit(file: File): Promise<Uint8Array> {
 
 export function isBytesWithinLimit(bytes: Uint8Array): boolean {
   return bytes.byteLength <= MAX_FILE_SIZE_BYTES;
-}
-
-/** Accept byte views from another browser realm without trusting arbitrary array-like objects. */
-export function isByteArray(value: unknown): value is Uint8Array {
-  return (
-    ArrayBuffer.isView(value) &&
-    (value as ArrayBufferView & { BYTES_PER_ELEMENT?: unknown }).BYTES_PER_ELEMENT === 1
-  );
 }

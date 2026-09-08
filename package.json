@@ -22,7 +22,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@telecrypt-io/storage": "0.5.26",
+    "@telecrypt-io/storage": "0.5.27",
     "buffer": "6.0.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"

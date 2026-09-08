@@ -4,12 +4,15 @@ import * as core from "../lib/core";
 import type { FolderInfo, VaultInfo } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
-import { MAX_FILE_NAME_BYTES, hasSafeRemoteNames, isSafeRemoteName } from "../lib/fileLimits";
 import { DetailsPanel, type Selection } from "./DetailsPanel";
 import { VaultContents } from "./VaultContents";
 
 const POLL_MS = 2500;
 const UNTITLED = "Untitled vault";
+
+function ownershipError(ownership: core.VaultOwnership): string | null {
+  return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
+}
 
 function uniqueUntitledName(existing: VaultInfo[]): string {
   const names = new Set(existing.map((vault) => vault.name.toLowerCase()));
@@ -107,9 +110,6 @@ export function FileManager() {
         ),
       ]);
       if (!isCurrentStorage(expectedStorage, generation, request)) return;
-      if (!hasSafeRemoteNames(result) || !hasSafeRemoteNames(pending)) {
-        throw new Error("Remote vault data is invalid");
-      }
       setVaults(result);
       setInvites(pending);
       setError(null);
@@ -121,11 +121,15 @@ export function FileManager() {
         rootVaultRef.current = refreshedRoot;
         setRootVault(refreshedRoot);
       }
-      setOwnedVaultIds(
-        new Set(
-          result.filter((vault) => core.isVaultOwner(expectedStorage, vault.id)).map((vault) => vault.id),
-        ),
-      );
+      let firstOwnershipError: string | null = null;
+      const ownedIds = new Set<string>();
+      for (const vault of result) {
+        const ownership = core.getVaultOwnership(expectedStorage, vault.id);
+        if (ownership.status === "owner") ownedIds.add(vault.id);
+        if (!firstOwnershipError) firstOwnershipError = ownershipError(ownership);
+      }
+      setOwnedVaultIds(ownedIds);
+      setError(firstOwnershipError);
     } catch (err) {
       if (isCurrentStorage(expectedStorage, generation, request)) {
         setOwnedVaultIds(new Set());
@@ -235,7 +239,6 @@ export function FileManager() {
         core.createVault(expectedStorage, name, { signal: accountSignal ?? undefined }),
       );
       if (!isCurrentStorage(expectedStorage, generation)) return;
-      if (!isSafeRemoteName(created.name)) throw new Error("Remote vault data is invalid");
       setVaults((prev) => [...(prev ?? []), created]);
       setOwnedVaultIds((prev) => new Set(prev).add(created.id));
       if (navigationGenerationRef.current === navigationGeneration) {
@@ -261,26 +264,21 @@ export function FileManager() {
       !isCurrentStorage(expectedStorage, generation) ||
       mutationInflightRef.current
     ) return;
-    const trimmed = target.name.trim();
-    if (!trimmed) {
-      setSidebarRenaming(null);
+    const targetName = target.name;
+    const ownership = core.getVaultOwnership(expectedStorage, target.id);
+    if (ownership.status !== "owner") {
+      if (ownership.status === "unknown") setError(ownershipError(ownership));
       return;
     }
-    if (!isSafeRemoteName(trimmed)) {
-      setSidebarRenaming(null);
-      setError("The vault name is invalid or too long.");
-      return;
-    }
-    if (!core.isVaultOwner(expectedStorage, target.id)) return;
     mutationInflightRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      await withAccountSignal(accountSignal, () =>
-        core.renameVault(expectedStorage, target.id, trimmed, { signal: accountSignal ?? undefined }),
+      const renamed = await withAccountSignal(accountSignal, () =>
+        core.renameVault(expectedStorage, target.id, targetName, { signal: accountSignal ?? undefined }),
       );
-      if (!isCurrentStorage(expectedStorage, generation) || !core.isVaultOwner(expectedStorage, target.id)) return;
-      handleVaultRenamed(target.id, trimmed);
+      if (!isCurrentStorage(expectedStorage, generation)) return;
+      handleVaultRenamed(renamed.id, renamed.name);
     } catch (err) {
       if (isCurrentStorage(expectedStorage, generation)) setError(formatOperationError(err));
     } finally {
@@ -300,7 +298,11 @@ export function FileManager() {
       !isCurrentStorage(expectedStorage, generation) ||
       mutationInflightRef.current
     ) return;
-    if (!core.isVaultOwner(expectedStorage, vault.id)) return;
+    const ownership = core.getVaultOwnership(expectedStorage, vault.id);
+    if (ownership.status !== "owner") {
+      if (ownership.status === "unknown") setError(ownershipError(ownership));
+      return;
+    }
     if (!confirm(`Delete empty vault "${vault.name}"? Delete its files and child folders first.`)) return;
     mutationInflightRef.current = true;
     setBusy(true);
@@ -449,7 +451,6 @@ export function FileManager() {
                 {sidebarRenaming?.id === vault.id ? (
                   <input
                     className="rename-input sidebar-rename"
-                    maxLength={MAX_FILE_NAME_BYTES}
                     aria-label={`Rename vault ${vault.name}`}
                     value={sidebarRenaming.name}
                     autoFocus

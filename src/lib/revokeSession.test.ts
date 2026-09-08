@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeSettings } from "./buildConfig";
+import { formatOperationError } from "./formatOperationError";
 import { revokeMatrixSession } from "./revokeSession";
 
 const target = {
@@ -46,15 +47,25 @@ describe("revokeMatrixSession", () => {
     expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
   });
 
-  it("turns an HTTP failure into a safe error without reading its body", async () => {
+  it("retains a complete redacted HTTP failure body", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(new Response("token-body-secret", { status: 503 }));
+      .mockResolvedValue(new Response("token-body-secret\naccess_token=body-access-secret\nfull detail", { status: 503 }));
 
-    const result = revokeMatrixSession(target, fetchMock);
+    let caught: unknown;
+    try {
+      await revokeMatrixSession(target, fetchMock);
+    } catch (error) {
+      caught = error;
+    }
 
-    await expect(result).rejects.toMatchObject({ reason: "failed" });
-    await expect(result).rejects.not.toThrow("token-body-secret");
+    expect(caught).toMatchObject({ reason: "failed" });
+    const detail = formatOperationError(caught);
+    expect(detail).toContain("HTTP 503");
+    expect(detail).toContain("full detail");
+    expect(detail).toContain("[REDACTED]");
+    expect(detail).not.toContain("token-body-secret");
+    expect(detail).not.toContain("body-access-secret");
   });
 
   it("accepts an already-invalid token as confirmed cleanup", async () => {
@@ -77,27 +88,71 @@ describe("revokeMatrixSession", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
   });
 
-  it.each([302, 503, 204] as const)("does not await never-settling body cancellation for %s", async (status) => {
+  it("bounds successful response cleanup", async () => {
+    vi.useFakeTimers();
     const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
-    const response = new Response(null, { status });
+    const response = new Response(null, { status: 204 });
     Object.defineProperty(response, "url", { value: endpoint });
     const cancel = vi.fn(() => new Promise<void>(() => undefined));
     Object.defineProperty(response, "body", { value: { cancel } });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
     const result = revokeMatrixSession(target, fetchMock);
-    if (status === 204) {
-      await expect(result).resolves.toBeUndefined();
-    } else {
-      await expect(result).rejects.toMatchObject({ reason: "failed" });
-    }
+    const assertion = expect(result).rejects.toMatchObject({ reason: "failed" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it("turns a network failure into a safe error", async () => {
+  it("propagates successful-response cleanup failures", async () => {
+    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
+    const response = new Response(null, { status: 204 });
+    Object.defineProperty(response, "url", { value: endpoint });
+    Object.defineProperty(response, "body", {
+      value: { cancel: vi.fn().mockRejectedValue(new Error("response cleanup failed")) },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    let caught: unknown;
+    try {
+      await revokeMatrixSession(target, fetchMock);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ reason: "failed" });
+    expect(formatOperationError(caught)).toContain("response cleanup failed");
+  });
+
+  it("preserves response-body read failures as a cause", async () => {
+    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
+    const response = new Response(null, { status: 503 });
+    Object.defineProperty(response, "url", { value: endpoint });
+    const bodyError = new Error("response body stream failed");
+    Object.defineProperty(response, "text", { value: vi.fn().mockRejectedValue(bodyError) });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    let caught: unknown;
+    try {
+      await revokeMatrixSession(target, fetchMock);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ reason: "failed" });
+    expect(formatOperationError(caught)).toContain("HTTP 503: response body could not be read");
+    expect(formatOperationError(caught)).toContain("response body stream failed");
+  });
+
+  it("retains a redacted network failure as a cause", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error("network token-body-secret"));
 
-    await expect(revokeMatrixSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
-    await expect(revokeMatrixSession(target, fetchMock)).rejects.not.toThrow("token-body-secret");
+    let caught: unknown;
+    try {
+      await revokeMatrixSession(target, fetchMock);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ reason: "failed" });
+    expect(formatOperationError(caught)).toContain("network token-[REDACTED]");
+    expect(formatOperationError(caught)).not.toContain("token-body-secret");
   });
 
   it("bounds a hung request and aborts it", async () => {
@@ -112,21 +167,6 @@ describe("revokeMatrixSession", () => {
     await assertion;
     expect(fetchMock.mock.calls[0][1]?.signal).toMatchObject({ aborted: true });
     pending.resolve(new Response(null, { status: 204 }));
-  });
-
-  it("cancels a late response after caller abort without awaiting body cleanup", async () => {
-    const controller = new AbortController();
-    const pending = deferred<Response>();
-    const cancel = vi.fn(() => new Promise<void>(() => undefined));
-    const fetchMock = vi.fn<typeof fetch>().mockReturnValue(pending.promise);
-    const result = revokeMatrixSession(target, fetchMock, controller.signal);
-    controller.abort();
-    await expect(result).rejects.toMatchObject({ reason: "failed" });
-    const late = new Response(null, { status: 204 });
-    Object.defineProperty(late, "url", { value: `${target.homeserver}/_matrix/client/v3/logout` });
-    Object.defineProperty(late, "body", { value: { cancel } });
-    pending.resolve(late);
-    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
   });
 
   it("rejects a session target that is not the configured homeserver", async () => {

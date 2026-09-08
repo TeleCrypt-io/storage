@@ -20,7 +20,6 @@ import {
 } from "./core";
 import type { Session } from "./session";
 import {
-  clearPendingRevocation,
   clearOidcTransientState,
   clearSession,
   assertSessionStorageWritable,
@@ -31,9 +30,11 @@ import {
   savePendingRevocation,
   isRuntimeMatrixDeviceId,
   isRuntimeMatrixUserId,
+  isSessionToken,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_PERSISTENCE_ERROR,
+  SESSION_STORAGE_UNAVAILABLE,
 } from "./session";
 import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
 import {
@@ -43,13 +44,65 @@ import {
   readOidcCallbackParams,
   scrubOidcCallbackParams,
 } from "./oidcCallback";
-import { revokeMatrixSession } from "./revokeSession";
+import { revokeOrRemember } from "./revokeSession";
+import { sanitizeDiagnosticError } from "./errorDetails";
 
 const CLIENT_ID_PREFIX = "telecrypt-io-ui:oidc-client:";
 const DEVICE_ID_PREFIX = "telecrypt-io-ui:device:";
 const MAX_OIDC_METADATA_FIELD_BYTES = 4096;
 const MAX_OIDC_CLIENT_ID_BYTES = 512;
-const MAX_OIDC_TOKEN_FIELD_BYTES = 8192;
+
+const SAFE_CALLBACK_MESSAGES = new Set([
+  "Sign-in failed",
+  "Sign-in was cancelled",
+  "OIDC callback homeserver does not match the configured environment",
+  "OIDC callback issuer does not match the configured environment",
+  "OIDC callback client identity could not be verified",
+  "OIDC device identity could not be verified",
+  "OIDC Matrix identity could not be verified",
+  "completeOidcLoginFromCallback: granted scope did not include a device_id",
+  SESSION_CLEANUP_PENDING_ERROR,
+  SESSION_CLEANUP_PERSISTENCE_ERROR,
+  SESSION_PERSISTENCE_ERROR,
+  SESSION_STORAGE_UNAVAILABLE,
+  "Browser persistent storage is unavailable",
+]);
+
+function publicFailure(message: string, failures: readonly unknown[]): Error {
+  const causes = failures.filter((failure) => failure !== undefined);
+  if (causes.length === 0) return new Error(message);
+  if (causes.length === 1) return new Error(message, { cause: causes[0] });
+  return new AggregateError(causes, message, { cause: causes[0] });
+}
+
+function safeCallbackFailure(error: unknown): Error {
+  const message = error instanceof Error && SAFE_CALLBACK_MESSAGES.has(error.message)
+    ? error.message
+    : "Sign-in failed";
+  return publicFailure(message, [sanitizeDiagnosticError(error)]);
+}
+
+function clearTransientOrThrow(primary: Error): never {
+  let cleared: boolean;
+  try {
+    cleared = clearOidcTransientState();
+  } catch (error) {
+    throw publicFailure(primary.message, [primary, error]);
+  }
+  if (cleared) throw primary;
+  throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
+}
+
+function clearSessionOrThrow(primary: Error): never {
+  let cleared: boolean;
+  try {
+    cleared = clearSession();
+  } catch (error) {
+    throw publicFailure(primary.message, [primary, error]);
+  }
+  if (cleared) throw primary;
+  throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
+}
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Sign-in is no longer active", "AbortError");
@@ -79,11 +132,8 @@ function boundedClientId(value: unknown): string {
 }
 
 function boundedToken(value: unknown, name: string): string {
-  const token = boundedString(value, name, MAX_OIDC_TOKEN_FIELD_BYTES);
-  if ([...token].some((character) => /\s/u.test(character) || character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f)) {
-    throw new Error(`${name} is invalid or too large`);
-  }
-  return token;
+  if (!isSessionToken(value)) throw new Error(`${name} is invalid or too large`);
+  return value;
 }
 
 function redirectUri(): string {
@@ -105,19 +155,20 @@ function persistentStore(): Storage {
     store.setItem(probe, "1");
     store.removeItem(probe);
     return store;
-  } catch {
-    throw new Error("Browser persistent storage is unavailable");
+  } catch (error) {
+    throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
 }
 
 function loadCachedClientId(issuer: string): string | null {
-  const cached = persistentStore().getItem(CLIENT_ID_PREFIX + issuer);
-  if (!cached) return null;
+  let cached: string | null;
   try {
-    return boundedClientId(cached);
-  } catch {
-    return null;
+    cached = persistentStore().getItem(CLIENT_ID_PREFIX + issuer);
+  } catch (error) {
+    throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
+  if (cached === null) return null;
+  return boundedClientId(cached);
 }
 
 function cacheClientId(issuer: string, clientId: string): void {
@@ -129,8 +180,8 @@ function cacheClientId(issuer: string, clientId: string): void {
     if (store.getItem(key) !== clientId) {
       throw new Error("Browser persistent storage is unavailable");
     }
-  } catch {
-    throw new Error("Browser persistent storage is unavailable");
+  } catch (error) {
+    throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
 }
 
@@ -157,8 +208,8 @@ function loadOrCreateDeviceId(issuer: string): string {
     store.setItem(key, deviceId);
     if (store.getItem(key) !== deviceId) throw new Error("device id was not persisted");
     return deviceId;
-  } catch {
-    throw new Error("Browser session storage is unavailable");
+  } catch (error) {
+    throw new Error("Browser session storage is unavailable", { cause: error });
   }
 }
 
@@ -168,16 +219,29 @@ async function cleanPendingRevocations(
 ): Promise<void> {
   for (const pending of loadPendingRevocations()) {
     throwIfAborted(signal);
+    const cleanupError = await revokeOrRemember(pending, signal);
+    if (cleanupError) throw cleanupError;
     try {
-      await revokeMatrixSession(pending, undefined, signal);
-    } catch {
-      throw new Error(SESSION_CLEANUP_PENDING_ERROR);
+      throwIfAborted(signal);
+      if (clearMatchingSession && loadSession()?.accessToken === pending.accessToken && !clearSession()) {
+        throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
+      }
+    } catch (error) {
+      // revokeOrRemember removes the pending marker after remote revocation.
+      // Restore it if any dependent local cleanup fails so a stale matching
+      // session is never left without its retry record.
+      let restored = false;
+      try {
+        restored = savePendingRevocation(pending);
+      } catch (persistenceError) {
+        throw publicFailure(SESSION_CLEANUP_PERSISTENCE_ERROR, [error, persistenceError]);
+      }
+      if (restored) throw error;
+      throw publicFailure(SESSION_CLEANUP_PERSISTENCE_ERROR, [
+        error,
+        new Error(SESSION_CLEANUP_PERSISTENCE_ERROR),
+      ]);
     }
-    throwIfAborted(signal);
-    if (clearMatchingSession && loadSession()?.accessToken === pending.accessToken && !clearSession()) {
-      throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-    }
-    if (!clearPendingRevocation(pending)) throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
   }
 }
 
@@ -213,14 +277,10 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   if (!clearOidcTransientState()) throw new Error(SESSION_PERSISTENCE_ERROR);
   await cleanPendingRevocations(true, signal);
   let existingSession = loadSession();
-  for (let attempt = 0; existingSession && attempt < 4; attempt += 1) {
+  while (existingSession) {
     throwIfAborted(signal);
-    try {
-      await revokeMatrixSession(existingSession, undefined, signal);
-    } catch {
-      savePendingRevocation(existingSession);
-      throw new Error(SESSION_CLEANUP_PENDING_ERROR);
-    }
+    const cleanupError = await revokeOrRemember(existingSession, signal);
+    if (cleanupError) throw cleanupError;
     throwIfAborted(signal);
     const rotatedSession = loadSession();
     if (
@@ -232,10 +292,6 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
     } else {
       existingSession = rotatedSession;
     }
-  }
-  if (existingSession) {
-    savePendingRevocation(existingSession);
-    throw new Error(SESSION_CLEANUP_PENDING_ERROR);
   }
   if (!clearSession()) throw new Error(SESSION_PERSISTENCE_ERROR);
   throwIfAborted(signal);
@@ -290,8 +346,14 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   const redirect = authorizationRedirect(url, authorizationEndpoint);
   const states = redirect.searchParams.getAll("state");
   if (states.length !== 1 || !states[0] || !saveOidcLoginIntent({ state: states[0], createdAt: Date.now() })) {
-    clearOidcTransientState();
-    throw new Error(SESSION_PERSISTENCE_ERROR);
+    const persistenceFailure = new Error(SESSION_PERSISTENCE_ERROR);
+    if (!clearOidcTransientState()) {
+      throw publicFailure(SESSION_PERSISTENCE_ERROR, [
+        persistenceFailure,
+        new Error(SESSION_PERSISTENCE_ERROR),
+      ]);
+    }
+    throw persistenceFailure;
   }
   throwIfAborted(signal);
   window.location.href = redirect.toString();
@@ -317,34 +379,34 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   scrubOidcCallbackParams(window.location);
 
   if (callbackKind !== "success" && callbackKind !== "error") {
-    if (!clearOidcTransientState()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw new Error("Sign-in callback was malformed");
+    clearTransientOrThrow(new Error("Sign-in callback was malformed"));
   }
   assertSessionStorageWritable();
   const intent = loadOidcLoginIntent();
   if (!intent || !state || state !== intent.state) {
-    if (!clearOidcTransientState()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw new Error("Sign-in callback state could not be verified");
+    clearTransientOrThrow(new Error("Sign-in callback state could not be verified"));
   }
   if (callbackIssuer !== null && callbackIssuer !== runtimeOidcIssuer()) {
-    if (!clearOidcTransientState()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw new Error("Sign-in callback issuer could not be verified");
+    clearTransientOrThrow(new Error("Sign-in callback issuer could not be verified"));
   }
 
   try {
     await cleanPendingRevocations(false, signal);
   } catch (error) {
-    clearOidcTransientState();
-    throw error;
+    const primary = safeCallbackFailure(error);
+    if (!clearOidcTransientState()) {
+      throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
+    }
+    throw primary;
   }
 
   if (callbackError) {
-    if (!clearSession()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw new Error(callbackError === "access_denied" ? "Sign-in was cancelled" : "Sign-in failed");
+    clearSessionOrThrow(
+      new Error(callbackError === "access_denied" ? "Sign-in was cancelled" : "Sign-in failed"),
+    );
   }
   if (!code || !state) {
-    if (!clearSession()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw new Error("Sign-in failed");
+    clearSessionOrThrow(new Error("Sign-in failed"));
   }
 
   let completed: Awaited<ReturnType<typeof completeAuthorizationCodeFlow>>;
@@ -355,8 +417,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
       signal,
     );
   } catch (error) {
-    if (!clearSession()) throw new Error(SESSION_PERSISTENCE_ERROR);
-    throw error;
+    clearSessionOrThrow(safeCallbackFailure(error));
   }
   const sessionCleared = clearSession();
   const { tokenResponse, oidcClientSettings, homeserverUrl } = completed;
@@ -412,34 +473,22 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
     // reporting a callback validation failure; if that request is uncertain, retain
     // only a tab-scoped retry record so the next sign-in attempt can retry revocation.
     let accessToken: string | null = null;
+    let accessTokenValidationError: unknown;
     try {
       accessToken = boundedToken(tokenResponse.access_token, "OIDC access token");
-    } catch {
-      // Do not send an unbounded provider field to the revocation endpoint.
+    } catch (validationError) {
+      accessTokenValidationError = validationError;
     }
-    let cleanupConfirmed = false;
-    try {
-      if (homeserverIsRuntime && accessToken) {
-        const target = { homeserver, accessToken };
-        await revokeMatrixSession(target, undefined, signal);
-        cleanupConfirmed = clearPendingRevocation(target);
-      }
-    } catch {
-      // The original callback failure remains the user-facing result unless its bearer token
-      // cannot be recorded for a same-tab revocation retry.
+    const primary = safeCallbackFailure(error);
+    const canRetryCleanup = homeserverIsRuntime && accessToken !== null;
+    if (canRetryCleanup && accessToken !== null) {
+      const target = { homeserver, accessToken };
+      const cleanupError = await revokeOrRemember(target, signal, primary);
+      if (cleanupError) throw cleanupError;
     }
-    const canRetryCleanup =
-      homeserverIsRuntime &&
-      accessToken !== null;
-    if (!cleanupConfirmed && canRetryCleanup && accessToken !== null) {
-      cleanupConfirmed = savePendingRevocation({
-        homeserver,
-        accessToken,
-      });
+    if (accessTokenValidationError !== undefined) {
+      throw publicFailure(primary.message, [primary, accessTokenValidationError]);
     }
-    if (!cleanupConfirmed && canRetryCleanup) {
-      throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
-    }
-    throw error;
+    throw primary;
   }
 }

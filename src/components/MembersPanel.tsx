@@ -4,13 +4,13 @@ import * as core from "../lib/core";
 import type { Member } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
-import { isRuntimeMatrixUserId } from "../lib/session";
+import { isRuntimeMatrixUserId, MAX_MATRIX_ID_BYTES } from "../lib/session";
 
 const POLL_MS = 4000;
-const MAX_MEMBER_ID_BYTES = 255;
-const MAX_MEMBER_COUNT = 1_000;
-const MEMBER_ROLES = new Set(["owner", "editor", "viewer"]);
-const MEMBER_MEMBERSHIPS = new Set(["join", "invite"]);
+
+function ownershipError(ownership: core.VaultOwnership): string | null {
+  return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
+}
 
 function displayName(userId: string): string {
   const local = userId.split(":")[0]?.replace(/^@/, "") ?? userId;
@@ -23,43 +23,7 @@ function initials(userId: string): string {
 }
 
 function isCanonicalMemberId(value: unknown): value is string {
-  return typeof value === "string" && new TextEncoder().encode(value).byteLength <= MAX_MEMBER_ID_BYTES && isRuntimeMatrixUserId(value);
-}
-
-function validateMembers(value: unknown): Member[] {
-  if (!Array.isArray(value) || value.length > MAX_MEMBER_COUNT) {
-    throw new Error("Member list is invalid");
-  }
-  if (
-    value.some(
-      (member) =>
-        typeof member !== "object" ||
-        member === null ||
-        !isCanonicalMemberId((member as Partial<Member>).userId) ||
-        !MEMBER_ROLES.has((member as Partial<Member>).role ?? "") ||
-        !MEMBER_MEMBERSHIPS.has((member as Partial<Member>).membership ?? ""),
-    )
-  ) {
-    throw new Error("Member list is invalid");
-  }
-  return value as Member[];
-}
-
-function isValidShareResult(
-  value: unknown,
-  vaultId: string,
-  userId: string,
-  role: string,
-): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const result = value as { vaultId?: unknown; userId?: unknown; role?: unknown };
-  return result.vaultId === vaultId && result.userId === userId && result.role === role;
-}
-
-function isValidUnshareResult(value: unknown, vaultId: string, userId: string): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const result = value as { vaultId?: unknown; userId?: unknown; removed?: unknown };
-  return result.vaultId === vaultId && result.userId === userId && result.removed === true;
+  return typeof value === "string" && isRuntimeMatrixUserId(value);
 }
 
 export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?: boolean }) {
@@ -82,7 +46,9 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
   // render and effect cleanup.
   // oxlint-disable-next-line react/refs
   identityRef.current = { storage, vaultId };
-  const canManage = core.isVaultOwner(storage, vaultId);
+  const ownership = core.getVaultOwnership(storage, vaultId);
+  const canManage = ownership.status === "owner";
+  const ownershipUnavailable = ownershipError(ownership);
 
   // Clear account-specific member state before the next identity's asynchronous refresh completes.
   // oxlint-disable react/set-state-in-effect
@@ -118,7 +84,7 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
         core.listMembers(storage, vaultId, { signal: accountSignal ?? undefined }),
       );
       if (isCurrent()) {
-        setMembers(validateMembers(nextMembers));
+        setMembers(nextMembers);
         setError(null);
       }
     } catch (err) {
@@ -150,9 +116,21 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
     const expectedStorage = storage;
     const expectedVaultId = vaultId;
     const expectedGeneration = identityGenerationRef.current;
-    if (!expectedStorage || !core.isVaultOwner(expectedStorage, expectedVaultId)) return;
+    if (!expectedStorage) return;
+    const ownership = core.getVaultOwnership(expectedStorage, expectedVaultId);
+    if (ownership.status !== "owner") {
+      if (ownership.status === "unknown") setError(ownershipError(ownership));
+      return;
+    }
     const targetUserId = shareUserId.trim();
-    if (!isCanonicalMemberId(targetUserId)) {
+    let canonicalMemberId = false;
+    try {
+      canonicalMemberId = isCanonicalMemberId(targetUserId);
+    } catch (err) {
+      setError(formatOperationError(err));
+      return;
+    }
+    if (!canonicalMemberId) {
       setError("Enter a valid Matrix user ID.");
       return;
     }
@@ -165,25 +143,21 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
       mutationGenerationRef.current === mutationGeneration &&
       identityRef.current.storage === expectedStorage &&
       identityRef.current.vaultId === expectedVaultId;
-    const isCurrentOwner = () => isCurrent() && core.isVaultOwner(expectedStorage, expectedVaultId);
     setBusy(true);
     setError(null);
     try {
-      const result = await withAccountSignal(
+      await withAccountSignal(
         accountSignal,
         () => core.shareVault(expectedStorage, expectedVaultId, targetUserId, shareRole, {
           signal: accountSignal ?? undefined,
         }),
       );
-      if (!isValidShareResult(result, expectedVaultId, targetUserId, shareRole)) {
-        throw new Error("Share response is invalid");
-      }
-      if (isCurrentOwner()) {
+      if (isCurrent()) {
         setShareUserId("");
         await refresh();
       }
     } catch (err) {
-      if (isCurrentOwner()) setError(formatOperationError(err));
+      if (isCurrent()) setError(formatOperationError(err));
     } finally {
       if (mutationGenerationRef.current === mutationGeneration) {
         mutationInFlightRef.current = false;
@@ -196,7 +170,12 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
     const expectedStorage = storage;
     const expectedVaultId = vaultId;
     const expectedGeneration = identityGenerationRef.current;
-    if (!expectedStorage || !core.isVaultOwner(expectedStorage, expectedVaultId)) return;
+    if (!expectedStorage) return;
+    const ownership = core.getVaultOwnership(expectedStorage, expectedVaultId);
+    if (ownership.status !== "owner") {
+      if (ownership.status === "unknown") setError(ownershipError(ownership));
+      return;
+    }
     if (!isCanonicalMemberId(userId)) return;
     if (mutationInFlightRef.current) return;
     const mutationGeneration = ++mutationGenerationRef.current;
@@ -207,22 +186,18 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
       mutationGenerationRef.current === mutationGeneration &&
       identityRef.current.storage === expectedStorage &&
       identityRef.current.vaultId === expectedVaultId;
-    const isCurrentOwner = () => isCurrent() && core.isVaultOwner(expectedStorage, expectedVaultId);
     setBusy(true);
     setError(null);
     try {
-      const result = await withAccountSignal(
+      await withAccountSignal(
         accountSignal,
         () => core.unshareVault(expectedStorage, expectedVaultId, userId, {
           signal: accountSignal ?? undefined,
         }),
       );
-      if (!isValidUnshareResult(result, expectedVaultId, userId)) {
-        throw new Error("Unshare response is invalid");
-      }
-      if (isCurrentOwner()) await refresh();
+      if (isCurrent()) await refresh();
     } catch (err) {
-      if (isCurrentOwner()) setError(formatOperationError(err));
+      if (isCurrent()) setError(formatOperationError(err));
     } finally {
       if (mutationGenerationRef.current === mutationGeneration) {
         mutationInFlightRef.current = false;
@@ -253,9 +228,9 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
             <p className="members-panel-hint muted">Everyone with access to this vault</p>
           )}
 
-          {error && (
+          {(error ?? ownershipUnavailable) && (
             <p className="error" data-testid="members-error">
-              {error}
+              {error ?? ownershipUnavailable}
             </p>
           )}
 
@@ -302,7 +277,7 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
                 placeholder="@user:homeserver"
                 value={shareUserId}
                 onChange={(e) => setShareUserId(e.target.value)}
-                maxLength={MAX_MEMBER_ID_BYTES}
+                maxLength={MAX_MATRIX_ID_BYTES}
                 data-testid="share-user-id"
               />
               <div className="invite-form-row">

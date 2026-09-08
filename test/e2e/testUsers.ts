@@ -6,7 +6,7 @@
  */
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { promisify } from "node:util";
+import { inspect, promisify } from "node:util";
 import {
   discoverOidcIssuer,
   isDeviceAccessTokenError,
@@ -39,6 +39,13 @@ function newDeviceId(): string {
 }
 
 async function registerUserInMas(username: string, password: string): Promise<void> {
+  const diagnostic = (value: unknown): string => {
+    let text = typeof value === "string" ? value : inspect(value, { depth: null, maxStringLength: null, maxArrayLength: null });
+    for (const secret of [password, username]) {
+      if (secret) text = text.split(secret).join("<redacted>");
+    }
+    return text;
+  };
   const args = [
     "exec",
     "throwaway-mas",
@@ -58,15 +65,17 @@ async function registerUserInMas(username: string, password: string): Promise<vo
   // resolve its Postgres hostname. Retry only that transient failure.
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      await execFileAsync("podman", args);
+      const result = await execFileAsync("podman", args, { maxBuffer: Number.POSITIVE_INFINITY });
+      process.stdout.write(diagnostic(result.stdout));
+      process.stderr.write(diagnostic(result.stderr));
       return;
     } catch (err) {
       const e = err as { stdout?: unknown; stderr?: unknown };
       const output = [e.stderr, e.stdout].filter((value): value is string => typeof value === "string").join("\n");
+      const detail = diagnostic(err);
+      process.stderr.write(`${detail}\n`);
       if (!output.includes("Temporary failure in name resolution") || attempt === 3) {
-        // Do not propagate execFile's message or command output: both may
-        // contain the generated --password argument.
-        throw new Error("mas-cli register-user failed");
+        throw new Error(`mas-cli register-user failed: ${detail}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }

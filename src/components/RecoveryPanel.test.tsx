@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RecoveryPanel } from "./RecoveryPanel";
 import { useStorage } from "../context/StorageContext";
+import { RecoverySetupAmbiguousError } from "../lib/core";
 
 vi.mock("../context/StorageContext", () => ({
   useStorage: vi.fn(),
@@ -44,6 +45,20 @@ beforeEach(() => {
 });
 
 describe("RecoveryPanel identity", () => {
+  it("surfaces recovery status diagnostics", async () => {
+    const storage = fakeStorage(false);
+    vi.mocked(storage.keys.isRecoverySetup).mockRejectedValue(
+      new Error("recovery status backend detail"),
+    );
+    useStorageMock.mockReturnValue({ storage } as never);
+
+    render(<RecoveryPanel />);
+
+    expect(await screen.findByTestId("recovery-error")).toHaveTextContent(
+      "recovery status backend detail",
+    );
+  });
+
   it("discards a recovery result from the previous storage identity", async () => {
     const storageA = fakeStorage(false);
     const storageB = fakeStorage(true);
@@ -99,31 +114,19 @@ describe("RecoveryPanel identity", () => {
 
   it("locks setup after an ambiguous result until status is reconciled", async () => {
     const storage = fakeStorage(false);
-    vi.mocked(storage.keys.setupRecovery).mockRejectedValue(new Error("response lost"));
+    const failure = new RecoverySetupAmbiguousError();
+    vi.mocked(storage.keys.setupRecovery).mockRejectedValue(failure);
     useStorageMock.mockReturnValue({ storage } as never);
 
     const user = userEvent.setup();
     render(<RecoveryPanel />);
     await user.click(await screen.findByTestId("setup-recovery"));
     expect(await screen.findByTestId("reconcile-recovery")).toBeInTheDocument();
+    expect(screen.getByTestId("recovery-error")).toHaveTextContent(failure.message);
     expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("reconcile-recovery"));
     expect(await screen.findByTestId("setup-recovery")).toBeInTheDocument();
-  });
-
-  it("treats an invalid setup result as indeterminate and blocks retry", async () => {
-    const storage = fakeStorage(false);
-    vi.mocked(storage.keys.setupRecovery).mockResolvedValue({ recoveryKey: "" } as never);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("setup-recovery"));
-
-    expect(await screen.findByTestId("reconcile-recovery")).toBeInTheDocument();
-    expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
   });
 
   it("times out setup and requires reconciliation before another attempt", async () => {
@@ -149,20 +152,6 @@ describe("RecoveryPanel identity", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("fails closed when the library cannot classify recovery status", async () => {
-    const storage = fakeStorage(false);
-    vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(undefined as never);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-status-unknown")).toBeInTheDocument();
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-    expect(screen.getByTestId("recovery-status-unknown")).toHaveTextContent(
-      "Account recovery status is unavailable.",
-    );
   });
 
   it("uses account-level status text and hides setup when recovery is configured", async () => {
@@ -219,12 +208,12 @@ describe("RecoveryPanel identity", () => {
 
     await waitFor(() => expect(input).toHaveValue(""));
     expect(screen.getByTestId("recovery-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
+      "upstream room id leaked",
     );
     view.unmount();
   });
 
-  it("rejects an oversized restore key before calling the SDK", async () => {
+  it("passes restore-key validation to the SDK", async () => {
     const storage = fakeStorage(true);
     useStorageMock.mockReturnValue({ storage } as never);
 
@@ -236,26 +225,10 @@ describe("RecoveryPanel identity", () => {
     });
     await user.click(screen.getByTestId("restore-submit"));
 
-    expect(storage.keys.restoreFromRecoveryKey).not.toHaveBeenCalled();
-    expect(screen.getByTestId("recovery-error")).toHaveTextContent("Recovery Key is too large");
-  });
-
-  it("rejects an invalid restore result and clears the entered key", async () => {
-    const storage = fakeStorage(true);
-    vi.mocked(storage.keys.restoreFromRecoveryKey).mockResolvedValue({ imported: 2, total: 1 } as never);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("restore-expand"));
-    const input = screen.getByTestId("restore-key-input");
-    await user.type(input, "recovery-key");
-    await user.click(screen.getByTestId("restore-submit"));
-
-    await waitFor(() => expect(input).toHaveValue(""));
-    expect(screen.queryByTestId("restore-result")).not.toBeInTheDocument();
-    expect(screen.getByTestId("recovery-error")).toHaveTextContent(
-      "The recovery key was rejected.",
+    expect(storage.keys.restoreFromRecoveryKey).toHaveBeenCalledWith(
+      "x".repeat(4097),
+      expect.anything(),
     );
+    expect(await screen.findByTestId("restore-result")).toHaveTextContent("Imported 1 of 1 keys.");
   });
 });

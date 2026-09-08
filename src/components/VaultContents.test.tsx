@@ -114,16 +114,14 @@ describe("VaultContents mutation identity", () => {
     );
   });
 
-  it("does not render malformed remote file names", async () => {
+  it("renders remote file names using the SDK contract", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$bad:localhost", name: "bad/name" }]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
 
     renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
 
-    expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
-    );
-    expect(screen.queryByText("bad/name")).not.toBeInTheDocument();
+    expect(await screen.findByText("bad/name")).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-detail-error")).not.toBeInTheDocument();
   });
 
   it("ignores an old upload error after navigating to another tree", async () => {
@@ -160,6 +158,26 @@ describe("VaultContents mutation identity", () => {
     await uploadTask;
     await waitFor(() => expect(screen.getByTestId("upload-button")).toBeEnabled());
     expect(screen.queryByTestId("vault-detail-error")).not.toBeInTheDocument();
+  });
+
+  it("stops a file batch after the first upload failure and preserves its error", async () => {
+    const failure = new Error("first upload failed");
+    vi.mocked(core.uploadFile)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue({ id: "$unexpected:localhost", name: "second.txt" });
+    const user = userEvent.setup();
+    renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
+
+    await waitFor(() => expect(screen.getByTestId("upload-button")).toBeEnabled());
+    await user.upload(screen.getByTestId("file-input"), [
+      new File(["first"], "first.txt", { type: "text/plain" }),
+      new File(["second"], "second.txt", { type: "text/plain" }),
+    ]);
+
+    expect(core.uploadFile).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
+      "first upload failed",
+    );
   });
 
   it("does not invoke a stale folder callback after navigation", async () => {
@@ -202,12 +220,8 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("surfaces the SDK nonempty-folder refusal without invoking the delete callback", async () => {
-    vi.mocked(core.deleteFolder).mockRejectedValue(
-      Object.assign(new Error("cannot delete a nonempty vault or folder; delete its files first"), {
-        code: "NON_EMPTY_TREE",
-        treeId: "!child:localhost",
-      }),
-    );
+    const failure = new core.NonEmptyTreeError("!child:localhost");
+    vi.mocked(core.deleteFolder).mockRejectedValue(failure);
     vi.stubGlobal("confirm", () => true);
     const onFolderDeleted = vi.fn<(folderId: string) => void>();
     const user = userEvent.setup();
@@ -218,7 +232,7 @@ describe("VaultContents mutation identity", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("vault-detail-error")).toHaveTextContent(
-        "Delete all files and empty child folders before deleting this vault or folder.",
+        failure.message,
       ),
     );
     expect(onFolderDeleted).not.toHaveBeenCalled();
@@ -402,25 +416,22 @@ describe("VaultContents mutation identity", () => {
     );
   });
 
-  it("rejects an oversized download before creating a Blob", async () => {
+  it("surfaces the SDK download size rejection", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$large", name: "too-large.bin" }]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.downloadFile).mockResolvedValue({
-      bytes: new Uint8Array(MAX_FILE_SIZE_BYTES + 1),
-      mimetype: "application/octet-stream",
-      name: "too-large.bin",
-    });
+    const failure = new core.FileTooLargeError();
+    vi.mocked(core.downloadFile).mockRejectedValue(failure);
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn());
 
     await user.click(await screen.findByTestId("download-file"));
 
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit.",
+      failure.message,
     );
   });
 
-  it("rejects a download when metadata cannot prove its size", async () => {
+  it("lets the SDK own download admission when optional display metadata is absent", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$unknown", name: "unknown.bin" }]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.getFileDetails).mockResolvedValue({
@@ -430,14 +441,16 @@ describe("VaultContents mutation identity", () => {
       createdAt: null,
       updatedAt: null,
     });
+    vi.mocked(core.downloadFile).mockRejectedValue(new Error("download failed"));
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn());
 
     await user.click(await screen.findByTestId("download-file"));
 
-    expect(core.downloadFile).not.toHaveBeenCalled();
+    expect(core.downloadFile).toHaveBeenCalled();
+    expect(core.getFileDetails).not.toHaveBeenCalled();
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File size could not be verified.",
+      "download failed",
     );
   });
 
@@ -456,7 +469,7 @@ describe("VaultContents mutation identity", () => {
     await user.upload(screen.getByTestId("file-input"), file);
 
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
+      "file read failed",
     );
     expect(screen.getByTestId("upload-button")).toBeEnabled();
     expect(core.uploadFile).not.toHaveBeenCalled();
@@ -509,7 +522,7 @@ describe("VaultContents mutation identity", () => {
       await act(async () => {
         for (let index = 0; index < 12; index += 1) await Promise.resolve();
       });
-      expect(core.getFileDetails).toHaveBeenCalled();
+      expect(core.getFileDetails).not.toHaveBeenCalled();
       expect(core.downloadFile).toHaveBeenCalled();
       expect(createObjectURL).toHaveBeenCalledWith(expect.any(TestBlob));
       expect(blobInputs).toEqual([
@@ -543,7 +556,7 @@ describe("VaultContents mutation identity", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("vault-detail-error")).toHaveTextContent(
-        "The operation could not be completed. Please try again.",
+        "access revoked",
       ),
     );
     expect(screen.queryByText("old.txt")).not.toBeInTheDocument();

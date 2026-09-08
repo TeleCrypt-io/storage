@@ -16,7 +16,7 @@ vi.mock("../lib/core", async () => {
     ...actual,
     listVaults: vi.fn(),
     listPendingInvites: vi.fn(),
-    isVaultOwner: vi.fn(),
+    getVaultOwnership: vi.fn(),
     createVault: vi.fn(),
     listFiles: vi.fn(),
     listSubfolders: vi.fn(),
@@ -57,7 +57,7 @@ const useStorageMock = vi.mocked(useStorage);
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
-  vi.mocked(core.isVaultOwner).mockReturnValue(true);
+  vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
   vi.mocked(core.listFiles).mockResolvedValue([]);
   vi.mocked(core.listSubfolders).mockResolvedValue([]);
   vi.mocked(core.listMembers).mockResolvedValue([]);
@@ -151,7 +151,7 @@ describe("FileManager refresh identity", () => {
     await flush();
 
     expect(screen.getByTestId("rename-vault")).toBeInTheDocument();
-    vi.mocked(core.isVaultOwner).mockImplementation(() => {
+    vi.mocked(core.getVaultOwnership).mockImplementation(() => {
       throw new Error("role unavailable");
     });
 
@@ -163,12 +163,17 @@ describe("FileManager refresh identity", () => {
 
     expect(screen.queryByTestId("rename-vault")).not.toBeInTheDocument();
     expect(screen.queryByTestId("delete-vault")).not.toBeInTheDocument();
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
+      "role unavailable",
+    );
   });
 
   it("does not delete a vault after an owner role is revoked while its control is open", async () => {
     const storage = fakeStorage("shared");
     let role = "owner";
-    vi.mocked(core.isVaultOwner).mockImplementation(() => role === "owner");
+    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
+      role === "owner" ? { status: "owner" } : { status: "not-owner" },
+    );
     vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
     vi.mocked(core.deleteVault).mockResolvedValue({ id: "!vault:localhost", deleted: true });
     useStorageMock.mockReturnValue({ storage } as never);
@@ -188,12 +193,8 @@ describe("FileManager refresh identity", () => {
     const storage = fakeStorage("shared");
     const vault = { id: "!vault:localhost", name: "Shared" };
     vi.mocked(core.listVaults).mockResolvedValue([vault]);
-    vi.mocked(core.deleteVault).mockRejectedValue(
-      Object.assign(new Error("cannot delete a nonempty vault or folder; delete its files first"), {
-        code: "NON_EMPTY_TREE",
-        treeId: vault.id,
-      }),
-    );
+    const failure = new core.NonEmptyTreeError(vault.id);
+    vi.mocked(core.deleteVault).mockRejectedValue(failure);
     useStorageMock.mockReturnValue({ storage } as never);
     const user = userEvent.setup();
     render(<FileManager />);
@@ -204,7 +205,7 @@ describe("FileManager refresh identity", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
-        "Delete all files and empty child folders before deleting this vault or folder.",
+        failure.message,
       ),
     );
     expect(screen.getByText("Shared")).toBeInTheDocument();
@@ -216,7 +217,9 @@ describe("FileManager refresh identity", () => {
     const deletion = deferred<{ id: string; deleted: true }>();
     let role = "owner";
     let refreshCount = 0;
-    vi.mocked(core.isVaultOwner).mockImplementation(() => role === "owner");
+    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
+      role === "owner" ? { status: "owner" } : { status: "not-owner" },
+    );
     vi.mocked(core.listVaults).mockImplementation(async () => {
       refreshCount += 1;
       return refreshCount === 1 ? [{ id: "!vault:localhost", name: "Shared" }] : [];
@@ -261,13 +264,14 @@ describe("FileManager refresh identity", () => {
 
     expect(screen.queryByTestId("delete-vault")).not.toBeInTheDocument();
     expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
+      "vault list unavailable",
     );
   });
 
-  it("rejects malformed remote vault names and vault rename input", async () => {
+  it("delegates remote vault-name validation to the SDK", async () => {
     const storage = fakeStorage("shared");
     vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
+    vi.mocked(core.renameVault).mockRejectedValue(new Error("invalid name"));
     useStorageMock.mockReturnValue({ storage } as never);
     const user = userEvent.setup();
     render(<FileManager />);
@@ -275,17 +279,24 @@ describe("FileManager refresh identity", () => {
 
     await user.click(screen.getByTestId("rename-vault"));
     fireEvent.change(screen.getByTestId("rename-vault-input"), {
-      target: { value: "not/a-name" },
+      target: { value: "bad\u0000name" },
     });
     fireEvent.keyDown(screen.getByTestId("rename-vault-input"), { key: "Enter" });
 
-    expect(core.renameVault).not.toHaveBeenCalled();
-    expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
-      "The vault name is invalid or too long.",
+    expect(core.renameVault).toHaveBeenCalledWith(
+      storage,
+      "!vault:localhost",
+      "bad\u0000name",
+      expect.anything(),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
+        "invalid name",
+      ),
     );
   });
 
-  it("does not render a vault name that exceeds the remote name bound", async () => {
+  it("renders remote names using the SDK contract", async () => {
     const storage = fakeStorage("shared");
     vi.mocked(core.listVaults).mockResolvedValue([
       { id: "!vault:localhost", name: "x".repeat(256) },
@@ -293,10 +304,8 @@ describe("FileManager refresh identity", () => {
     useStorageMock.mockReturnValue({ storage } as never);
     render(<FileManager />);
 
-    expect(await screen.findByTestId("vault-list-error")).toHaveTextContent(
-      "The operation could not be completed. Please try again.",
-    );
-    expect(screen.queryByText("x".repeat(256))).not.toBeInTheDocument();
+    expect(await screen.findByText("x".repeat(256))).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-list-error")).not.toBeInTheDocument();
   });
 
   it("clears a selected vault when the account no longer lists it", async () => {
