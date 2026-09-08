@@ -118,11 +118,23 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
-async function readResponseFailure(response: Response): Promise<Error> {
-  const status = `HTTP ${response.status}${response.statusText ? ` ${sanitizeDiagnosticText(response.statusText)}` : ""}`;
+function responseStatus(response: Response): string {
+  return `HTTP ${response.status}${response.statusText ? ` ${sanitizeDiagnosticText(response.statusText)}` : ""}`;
+}
+
+function responseFailureFromText(response: Response, body: string): Error {
+  return new Error(
+    `${responseStatus(response)}: ${body === "" ? "(empty response body)" : sanitizeDiagnosticText(body)}`,
+  );
+}
+
+type ResponseBodyRead =
+  | { ok: true; text: string }
+  | { ok: false; error: Error };
+
+async function readResponseBody(response: Response): Promise<ResponseBodyRead> {
   try {
-    const body = await response.text();
-    return new Error(`${status}: ${body === "" ? "(empty response body)" : sanitizeDiagnosticText(body)}`);
+    return { ok: true, text: await response.text() };
   } catch (error) {
     const failures: unknown[] = [sanitizeDiagnosticError(error)];
     try {
@@ -130,12 +142,28 @@ async function readResponseFailure(response: Response): Promise<Error> {
     } catch (cleanupError) {
       failures.push(sanitizeDiagnosticError(cleanupError));
     }
-    return new Error(`${status}: response body could not be read`, {
-      cause: failures.length === 1
-        ? failures[0]
-        : new AggregateError(failures, "response body read and cleanup failed", { cause: failures[0] }),
-    });
+    const cause = failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "response body read and cleanup failed", { cause: failures[0] });
+    return {
+      ok: false,
+      error: new Error(`${responseStatus(response)}: response body could not be read`, { cause }),
+    };
   }
+}
+
+async function readResponseFailure(response: Response): Promise<Error> {
+  const body = await readResponseBody(response);
+  return body.ok ? responseFailureFromText(response, body.text) : body.error;
+}
+
+function isUnknownAccessTokenResponse(status: number, body: unknown): boolean {
+  return (
+    status === 401 &&
+    Boolean(body) &&
+    typeof body === "object" &&
+    (body as { errcode?: unknown }).errcode === "M_UNKNOWN_TOKEN"
+  );
 }
 
 /**
@@ -195,11 +223,25 @@ export async function revokeMatrixSession(
       });
       throw failure;
     }
-    // Matrix returns 401/M_UNKNOWN_TOKEN when this device token was already
-    // invalidated (for example, the first logout succeeded but its response was
-    // lost). That is a definitive least-privilege outcome, so retry is
-    // idempotent without reading or trusting the response body.
-    if (response.status !== 200 && response.status !== 204 && response.status !== 401) {
+    if (response.status === 401) {
+      const body = await readResponseBody(response);
+      if (!body.ok) {
+        throw new SessionRevocationError("failed", { cause: body.error });
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body.text) as unknown;
+      } catch {
+        parsed = undefined;
+      }
+      if (!isUnknownAccessTokenResponse(response.status, parsed)) {
+        throw new SessionRevocationError("failed", {
+          cause: responseFailureFromText(response, body.text),
+        });
+      }
+      return;
+    }
+    if (response.status !== 200 && response.status !== 204) {
       const failure = new SessionRevocationError("failed", {
         cause: await readResponseFailure(response),
       });

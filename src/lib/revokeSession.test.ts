@@ -70,13 +70,37 @@ describe("revokeMatrixSession", () => {
 
   it("accepts an already-invalid token as confirmed cleanup", async () => {
     const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
-    const response = new Response("unknown token", { status: 401 });
+    const response = new Response(JSON.stringify({ errcode: "M_UNKNOWN_TOKEN", error: "unknown token" }), { status: 401 });
     Object.defineProperty(response, "url", { value: endpoint });
-    const cancel = vi.spyOn(response.body!, "cancel");
+    const readBody = vi.spyOn(response, "text");
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
 
     await expect(revokeMatrixSession(target, fetchMock)).resolves.toBeUndefined();
-    expect(cancel).toHaveBeenCalled();
+    expect(readBody).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an arbitrary 401 while retaining its complete redacted body", async () => {
+    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
+    const response = new Response(
+      "not an unknown-token response\naccess_token=body-access-secret\nfull detail",
+      { status: 401 },
+    );
+    Object.defineProperty(response, "url", { value: endpoint });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    let caught: unknown;
+    try {
+      await revokeMatrixSession(target, fetchMock);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ reason: "failed" });
+    const detail = formatOperationError(caught);
+    expect(detail).toContain("HTTP 401");
+    expect(detail).toContain("full detail");
+    expect(detail).toContain("[REDACTED]");
+    expect(detail).not.toContain("body-access-secret");
   });
 
   it("rejects a redirect instead of following it", async () => {
