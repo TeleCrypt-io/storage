@@ -56,10 +56,11 @@ exactly one `X-Frame-Options: DENY` header on every response. The checked-in `pu
 records that contract; GitHub Pages production cannot emit response headers and continues to use
 the HTML meta policy as its browser baseline.
 
-GitHub Pages release publication is separate from authenticated acceptance. Authenticated acceptance
-remains blocked until the site is served behind a header-capable edge that adds
-`Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`. The CSP meta tag
-cannot provide those response headers, and GitHub Pages cannot emit them.
+GitHub Pages release publication is separate from authenticated acceptance. The response-header
+requirement is a stage-only acceptance check on the header-capable Cloudflare Pages target:
+`storage.stage.telecrypt.io` must add `Content-Security-Policy: frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. GitHub Pages production is the documented hosting exception because it
+cannot emit response headers; its HTML meta policy remains the browser baseline.
 
 ## Shared UI vendor baseline
 
@@ -85,7 +86,14 @@ npm run verify:package
 
 Browser acceptance tooling is operator-local Harness work, never a GitHub Actions job. Its real
 browser suite expects the shared disposable Synapse/MAS fixture to be running on localhost before
-`npm run e2e`; this repository does not carry or duplicate that fixture.
+`npm run e2e`; this repository does not carry or duplicate that fixture. Component tests may mock
+the SDK boundary for isolated UI behavior, but they do not replace the real-stack e2e suite. The
+same Podman fixture is shared with the SDK and CLI functional tests.
+
+If setup or tests report an error or issue, preserve the fixture and diagnostics; do not tear them
+down before the private Harness investigation is complete. The fixture workflow here does not provide
+that procedure; follow the [Harness operator workflow](https://github.com/TeleCrypt-io/Harness/blob/main/docs/release.md#required-stage-first-sequence)
+for the canonical ordering and stopping boundary.
 
 ## Releases and deployment
 
