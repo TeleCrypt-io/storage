@@ -71,21 +71,18 @@ test("upload folder with nested tree", async ({ page }) => {
   fs.writeFileSync(path.join(rootDir, "a.txt"), "a");
   fs.writeFileSync(path.join(rootDir, "sub", "b.txt"), "b");
 
-  try {
-    await page.getByTestId("folder-input").setInputFiles(rootDir);
-    await expect(page.getByTestId("upload-folder-button")).toBeEnabled({ timeout: 20000 });
+  await page.getByTestId("folder-input").setInputFiles(rootDir);
+  await expect(page.getByTestId("upload-folder-button")).toBeEnabled({ timeout: 20000 });
 
-    await page.locator('[data-testid="subfolder-item"]', { hasText: "root" }).locator(".row-name-btn").click();
-    await expect(page.locator('[data-testid="file-item"]', { hasText: "a.txt" })).toBeVisible({
-      timeout: 20000,
-    });
-    await page.locator('[data-testid="subfolder-item"]', { hasText: "sub" }).locator(".row-name-btn").click();
-    await expect(page.locator('[data-testid="file-item"]', { hasText: "b.txt" })).toBeVisible({
-      timeout: 20000,
-    });
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  await page.locator('[data-testid="subfolder-item"]', { hasText: "root" }).locator(".row-name-btn").click();
+  await expect(page.locator('[data-testid="file-item"]', { hasText: "a.txt" })).toBeVisible({
+    timeout: 20000,
+  });
+  await page.locator('[data-testid="subfolder-item"]', { hasText: "sub" }).locator(".row-name-btn").click();
+  await expect(page.locator('[data-testid="file-item"]', { hasText: "b.txt" })).toBeVisible({
+    timeout: 20000,
+  });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test("details panel is visible when browsing a vault", async ({ page }) => {
