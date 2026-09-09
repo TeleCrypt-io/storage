@@ -182,7 +182,11 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
 });
 
 test.afterEach(async ({ holdFailedBrowser, contexts }, testInfo) => {
-  if (testInfo.status === testInfo.expectedStatus) return;
+  // The contexts fixture retains errors from dependent fixtures and the test body so it can
+  // preserve traces before closing browsers. During afterEach, Playwright can therefore expose
+  // the primary error before updating status from the expected `passed` value.
+  const wrappedFailurePending = testInfo.expectedStatus === "passed" && testInfo.errors.length > 0;
+  if (testInfo.status === testInfo.expectedStatus && !wrappedFailurePending) return;
 
   testInfo.setTimeout(0);
   // Snapshot the complete primary failure before any trace finalization or hold operation.
