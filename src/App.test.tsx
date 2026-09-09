@@ -76,7 +76,7 @@ vi.mock("./lib/revokeSession", async () => {
 
 const SESSION = {
   homeserver: "http://localhost:8008",
-  userId: "@alice:localhost",
+  userId: "@alice:localhost:8008",
   deviceId: "DEVICE1",
   accessToken: "tok-123",
   refreshToken: "refresh-123",
@@ -336,7 +336,7 @@ describe("login", () => {
     expect(core.TeleCryptIOStorage.createFromOidc).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: SESSION.homeserver,
-        serverName: "localhost",
+        serverName: "localhost:8008",
         userId: SESSION.userId,
         deviceId: SESSION.deviceId,
         accessToken: SESSION.accessToken,
@@ -687,7 +687,7 @@ describe("vaults", () => {
   it("hides access mutations from non-owners", async () => {
     vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
     await openVault("Shared", {
-      members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
+      members: [{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }],
     });
 
     await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
@@ -704,11 +704,11 @@ describe("vaults", () => {
       role === "owner" ? { status: "owner" } : { status: "not-owner" },
     );
     const user = await openVault("Shared", {
-      members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
+      members: [{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }],
     });
     await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
 
-    await user.type(screen.getByTestId("share-user-id"), "@carol:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@carol:localhost:8008");
     const shareSubmit = screen.getByTestId("share-submit");
     const unshareMember = screen.getByTestId("unshare-member");
     role = "viewer";
@@ -1076,12 +1076,12 @@ describe("sharing", () => {
     await user.click(screen.getByRole("button", { name: "A" }));
     await screen.findByTestId("vault-detail");
     await user.click(screen.getByRole("button", { name: "B" }));
-    membersA.resolve([{ userId: "@old:localhost", role: "viewer", membership: "join" }]);
+    membersA.resolve([{ userId: "@old:localhost:8008", role: "viewer", membership: "join" }]);
     await waitFor(() => expect(screen.queryByTestId("member-item")).not.toBeInTheDocument());
 
-    membersB.resolve([{ userId: "@new:localhost", role: "viewer", membership: "join" }]);
+    membersB.resolve([{ userId: "@new:localhost:8008", role: "viewer", membership: "join" }]);
     await waitFor(() =>
-      expect(screen.getByTestId("member-item")).toHaveAttribute("data-user-id", "@new:localhost"),
+      expect(screen.getByTestId("member-item")).toHaveAttribute("data-user-id", "@new:localhost:8008"),
     );
   });
 
@@ -1118,18 +1118,18 @@ describe("sharing", () => {
     ]);
     await user.click(screen.getByRole("button", { name: "A" }));
     await screen.findByTestId("vault-detail");
-    await user.type(screen.getByTestId("share-user-id"), "@old:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@old:localhost:8008");
     const shareTask = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "B" }));
     await user.click(screen.getByRole("button", { name: "A" }));
     const currentInput = await screen.findByTestId("share-user-id");
-    await user.type(currentInput, "@new:localhost");
+    await user.type(currentInput, "@new:localhost:8008");
 
-    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost", role: "editor" });
+    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost:8008", role: "editor" });
     await shareTask;
-    await waitFor(() => expect(currentInput).toHaveValue("@new:localhost"));
+    await waitFor(() => expect(currentInput).toHaveValue("@new:localhost:8008"));
 
     firstMembersA.resolve([]);
     membersB.resolve([]);
@@ -1142,35 +1142,35 @@ describe("sharing", () => {
 
     vi.mocked(core.shareVault).mockResolvedValue({
       vaultId: "!vault:localhost",
-      userId: "@bob:localhost",
+      userId: "@bob:localhost:8008",
       role: "editor",
     });
     vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: "@bob:localhost", role: "editor", membership: "invite" },
+      { userId: "@bob:localhost:8008", role: "editor", membership: "invite" },
     ]);
 
-    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
     await user.click(screen.getByTestId("share-submit"));
 
     expect(core.shareVault).toHaveBeenCalledWith(
       expect.anything(),
       "!vault:localhost",
-      "@bob:localhost",
+      "@bob:localhost:8008",
       "editor",
       abortOptions(),
     );
-    expect(await screen.findByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost");
+    expect(await screen.findByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost:8008");
   });
 
   it("removes a member via core.unshareVault", async () => {
     const user = await openVault("Docs", {
-      members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
+      members: [{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }],
     });
     await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
 
     vi.mocked(core.unshareVault).mockResolvedValue({
       vaultId: "!vault:localhost",
-      userId: "@bob:localhost",
+      userId: "@bob:localhost:8008",
       removed: true,
     });
     vi.mocked(core.listMembers).mockResolvedValue([]);
@@ -1180,7 +1180,7 @@ describe("sharing", () => {
     expect(core.unshareVault).toHaveBeenCalledWith(
       expect.anything(),
       "!vault:localhost",
-      "@bob:localhost",
+      "@bob:localhost:8008",
       abortOptions(),
     );
   });

@@ -18,6 +18,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const HOMESERVER = "http://localhost:8008";
+const SERVER_NAME = "localhost:8008";
 const MAS_BASE = new URL(`${HOMESERVER}/auth/`);
 const PROVISIONING_RETRIES = 3;
 const PROVISIONING_RETRY_DELAY_MS = 300;
@@ -286,7 +287,7 @@ async function loginViaDeviceCode(
   if (isDeviceAccessTokenError(result)) {
     throw new Error(`device-code login failed (${result.error}): ${result.error_description ?? "no description"}`);
   }
-  const identity = await whoAmI(HOMESERVER, result.access_token);
+  const identity = await whoAmI(HOMESERVER, result.access_token, SERVER_NAME);
   if (identity.deviceId !== deviceId) {
     throw new Error(
       `device-code login returned device ${identity.deviceId ?? "none"}, expected ${deviceId}`,

@@ -27,13 +27,13 @@ describe("page-bound environment", () => {
 
   it("allows only explicit loopback development", async () => {
     setOrigin("http://localhost:5173");
-    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost" });
+    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
 
     setOrigin("http://127.0.0.1:5173");
-    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost" });
+    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
 
     setOrigin("http://[::1]:5173");
-    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost" });
+    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
   });
 
   it.each([

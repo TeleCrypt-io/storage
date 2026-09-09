@@ -20,7 +20,7 @@ import {
 
 const SESSION: Session = {
   homeserver: "http://localhost:8008",
-  userId: "@alice:localhost",
+  userId: "@alice:localhost:8008",
   deviceId: "DEVICE1",
   accessToken: "access-a",
   refreshToken: "refresh-a",
@@ -212,13 +212,13 @@ describe("tab-scoped session persistence", () => {
   });
 
   it("accepts canonical Matrix plus localparts while binding the server", () => {
-    const withPlus = { ...SESSION, userId: "@alice+device:localhost" };
+    const withPlus = { ...SESSION, userId: "@alice+device:localhost:8008" };
     expect(saveSessionIfCurrent(withPlus, null)).toBe(true);
-    expect(loadSession()?.userId).toBe("@alice+device:localhost");
+    expect(loadSession()?.userId).toBe("@alice+device:localhost:8008");
   });
 
   it("matches the SDK Matrix identifier grammar", () => {
-    expect(isRuntimeMatrixUserId("@Alice+device/1:LOCALHOST")).toBe(true);
+    expect(isRuntimeMatrixUserId("@Alice+device/1:LOCALHOST:8008")).toBe(true);
     expect(isRuntimeMatrixDeviceId("DEVICE~1")).toBe(true);
     expect(isRuntimeMatrixDeviceId("DEVICE=1")).toBe(false);
     expect(isRuntimeMatrixDeviceId("D".repeat(129))).toBe(false);

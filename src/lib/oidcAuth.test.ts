@@ -182,7 +182,7 @@ describe("beginOidcLogin stable device id", () => {
       "telecrypt-io-ui:session",
       JSON.stringify({
         homeserver: getRuntimeSettings().homeserver,
-        userId: "@alice:localhost",
+        userId: "@alice:localhost:8008",
         deviceId: "DEVICE1",
         accessToken: "old-access",
         refreshToken: "old-refresh",
@@ -300,7 +300,7 @@ describe("beginOidcLogin stable device id", () => {
       "telecrypt-io-ui:session",
       JSON.stringify({
         homeserver: getRuntimeSettings().homeserver,
-        userId: "@alice:localhost",
+        userId: "@alice:localhost:8008",
         deviceId: "DEVICE1",
         accessToken: pending.accessToken,
         refreshToken: "old-refresh",
@@ -373,17 +373,17 @@ describe("beginOidcLogin stable device id", () => {
         scope: "urn:matrix:client:device:DEVICE1234",
       },
     } as never);
-    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost", deviceId: "DEVICE1234" });
+    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost:8008", deviceId: "DEVICE1234" });
 
     await expect(completeOidcLoginFromCallback()).resolves.toMatchObject({
       homeserver: getRuntimeSettings().homeserver,
-      userId: "@alice:localhost",
+      userId: "@alice:localhost:8008",
       deviceId: "DEVICE1234",
     });
     expect(core.whoAmI).toHaveBeenCalledWith(
       "http://localhost:8008",
       "access",
-      "localhost",
+      "localhost:8008",
       undefined,
     );
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
@@ -400,7 +400,7 @@ describe("beginOidcLogin stable device id", () => {
         scope: "urn:matrix:client:device:DEVICE1234",
       },
     } as never);
-    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost", deviceId: "DEVICE1234" });
+    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost:8008", deviceId: "DEVICE1234" });
     const original = window.sessionStorage;
     const blocked = {
       get length() {
@@ -460,7 +460,7 @@ describe("beginOidcLogin stable device id", () => {
         scope: "urn:matrix:client:device:DEVICE1234",
       },
     } as never);
-    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost", deviceId: null });
+    vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:localhost:8008", deviceId: null });
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow(
       "OIDC device identity could not be verified",
@@ -569,7 +569,7 @@ describe("beginOidcLogin stable device id", () => {
       "telecrypt-io-ui:session",
       JSON.stringify({
         homeserver: getRuntimeSettings().homeserver,
-        userId: "@alice:localhost",
+        userId: "@alice:localhost:8008",
         deviceId: "DEVICE1",
         accessToken: "live-access",
         refreshToken: "live-refresh",
@@ -592,7 +592,7 @@ describe("beginOidcLogin stable device id", () => {
       "telecrypt-io-ui:session",
       JSON.stringify({
         homeserver: getRuntimeSettings().homeserver,
-        userId: "@alice:localhost",
+        userId: "@alice:localhost:8008",
         deviceId: "DEVICE1",
         accessToken: "old-access",
         refreshToken: "old-refresh",
@@ -604,7 +604,7 @@ describe("beginOidcLogin stable device id", () => {
         "telecrypt-io-ui:session",
         JSON.stringify({
           homeserver: getRuntimeSettings().homeserver,
-          userId: "@alice:localhost",
+          userId: "@alice:localhost:8008",
           deviceId: "DEVICE1",
           accessToken: "rotated-access",
           refreshToken: "rotated-refresh",

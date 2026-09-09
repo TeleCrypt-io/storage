@@ -49,7 +49,7 @@ beforeEach(() => {
   });
   useStorageMock.mockReturnValue({
     storage: fakeStorage(),
-    session: { userId: "@alice:localhost" },
+    session: { userId: "@alice:localhost:8008" },
   } as never);
 });
 
@@ -61,7 +61,7 @@ describe("MembersPanel access state", () => {
   it("clears member identities when a refresh fails", async () => {
     vi.useFakeTimers();
     vi.mocked(core.listMembers)
-      .mockResolvedValueOnce([{ userId: "@bob:localhost", role: "viewer", membership: "join" }])
+      .mockResolvedValueOnce([{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }])
       .mockRejectedValueOnce(new Error("membership unavailable"));
     render(<MembersPanel vaultId="!vault:localhost" embedded />);
 
@@ -69,7 +69,7 @@ describe("MembersPanel access state", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.getByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost");
+    expect(screen.getByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost:8008");
 
     await act(async () => {
       vi.advanceTimersByTime(POLL_MS);
@@ -98,11 +98,11 @@ describe("MembersPanel access state", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
     const submit = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
     role = "viewer";
-    share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost", role: "editor" });
+    share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost:8008", role: "editor" });
     await submit;
 
     await waitFor(() => expect(core.listMembers).toHaveBeenCalledTimes(2));
@@ -116,7 +116,7 @@ describe("MembersPanel access state", () => {
     const user = userEvent.setup();
     render(<MembersPanel vaultId="!vault:localhost" embedded />);
     await screen.findByText("No members");
-    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
     const submit = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
     vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
@@ -131,12 +131,12 @@ describe("MembersPanel access state", () => {
 
   it("renders SDK-authoritative member identities", async () => {
     vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: "@bob+device:localhost", role: "viewer", membership: "join" },
+      { userId: "@bob+device:localhost:8008", role: "viewer", membership: "join" },
     ]);
     render(<MembersPanel vaultId="!vault:localhost" embedded />);
     expect(await screen.findByTestId("member-item")).toHaveAttribute(
       "data-user-id",
-      "@bob+device:localhost",
+      "@bob+device:localhost:8008",
     );
   });
 
@@ -147,13 +147,13 @@ describe("MembersPanel access state", () => {
     const user = userEvent.setup();
     render(<MembersPanel vaultId="!vault:localhost" />);
     await waitFor(() => expect(screen.getByText("No members")).toBeInTheDocument());
-    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost");
+    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
 
     const first = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalledTimes(1));
     const second = user.click(screen.getByTestId("share-submit"));
     expect(core.shareVault).toHaveBeenCalledTimes(1);
-    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost", role: "editor" });
+    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost:8008", role: "editor" });
     await first;
     await second;
 

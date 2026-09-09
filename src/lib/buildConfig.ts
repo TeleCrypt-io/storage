@@ -17,6 +17,7 @@ const STORAGE_ENVIRONMENTS = new Map<string, RuntimeSettings>([
 ]);
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const DEVELOPMENT_HOMESERVER = "http://localhost:8008";
+const DEVELOPMENT_SERVER_NAME = "localhost:8008";
 
 function deriveRuntimeSettings(origin: string, development: boolean): RuntimeSettings {
   let page: URL;
@@ -35,9 +36,9 @@ function deriveRuntimeSettings(origin: string, development: boolean): RuntimeSet
     origin === page.origin &&
     LOOPBACK_HOSTS.has(hostname)
   ) {
-    // The disposable Matrix fixture is configured with the canonical `localhost`
-    // server name even when the browser reaches it through another loopback alias.
-    return { homeserver: DEVELOPMENT_HOMESERVER, serverName: "localhost" };
+    // The disposable Matrix fixture uses the homeserver authority as its canonical
+    // server name even when the browser reaches the UI through another loopback alias.
+    return { homeserver: DEVELOPMENT_HOMESERVER, serverName: DEVELOPMENT_SERVER_NAME };
   }
   if (
     page.protocol !== "https:" ||
