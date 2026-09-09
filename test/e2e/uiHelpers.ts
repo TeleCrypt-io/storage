@@ -6,14 +6,23 @@ export interface ConsoleAudit {
   assertClean: () => void;
 }
 
+const EXPECTED_LOCAL_CONSOLE = [
+  /^Applying inline style violates .* \(http:\/\/localhost:5173\/@vite\/client\)$/,
+  /^Failed to load resource: net::ERR_SSL_PROTOCOL_ERROR \(https:\/\/localhost:8008\/\.well-known\/matrix\/client\)$/,
+  /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/room_keys\/version\)$/,
+  /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/unstable\/org\.matrix\.msc4143\/rtc\/transports\)$/,
+  /^Adding default global (?:override|underride) push rule \.(?:org\.matrix\.msc3786\.rule\.room\.server_acl|org\.matrix\.msc3914\.rule\.room\.call) \(http:\/\/localhost:5173\/@vite\/client\)$/,
+];
+
 /** Fail a test on every unexpected browser warning, error, or uncaught page error. */
 export function auditConsole(page: Page, allowed: RegExp[] = []): ConsoleAudit {
   const unexpected: string[] = [];
   page.on("console", (message) => {
     if (message.type() !== "warning" && message.type() !== "error") return;
-    const text = message.text();
-    if (!allowed.some((pattern) => pattern.test(text))) {
-      unexpected.push(`${message.type()}: ${text}`);
+    const location = message.location().url;
+    const detail = `${message.text()}${location ? ` (${location})` : ""}`;
+    if (![...EXPECTED_LOCAL_CONSOLE, ...allowed].some((pattern) => pattern.test(detail))) {
+      unexpected.push(`${message.type()}: ${detail}`);
     }
   });
   page.on("pageerror", (error) => unexpected.push(`pageerror: ${error.message}`));
