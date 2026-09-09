@@ -7,7 +7,13 @@ const expectedProduction = new Map([
   ["script-src", ["'self'", "'wasm-unsafe-eval'"]],
   ["style-src", ["'self'"]],
   ["img-src", ["'self'"]],
-  ["connect-src", ["'self'", "https://backend.telecrypt.io", "https://backend.stage.telecrypt.io"]],
+  ["connect-src", [
+    "'self'",
+    "https://backend.telecrypt.io",
+    "https://backend.stage.telecrypt.io",
+    "https://stage.telecrypt.io/.well-known/matrix/client",
+    "https://telecrypt.io/.well-known/matrix/client",
+  ]],
   ["form-action", ["'self'"]],
 ]);
 const expectedStage = new Map([
@@ -79,7 +85,7 @@ requireExactPolicy(parsePolicy(headers.get("Content-Security-Policy")), expected
 
 const viteConfig = readFileSync("vite.config.ts", "utf8");
 for (const exact of [
-  `"connect-src 'self' https://backend.telecrypt.io https://backend.stage.telecrypt.io;";`,
+  `"connect-src 'self' https://backend.telecrypt.io https://backend.stage.telecrypt.io https://stage.telecrypt.io/.well-known/matrix/client https://telecrypt.io/.well-known/matrix/client;";`,
   `"connect-src 'self' http://localhost:* ws://localhost:*;";`,
 ]) {
   if (!viteConfig.includes(exact)) {
