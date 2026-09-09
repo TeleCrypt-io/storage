@@ -9,6 +9,7 @@ const sharedUiRelease = readFileSync("scripts/verify-shared-ui-release.sh", "utf
 const captureDiagnostics = readFileSync("scripts/capture-diagnostics.sh", "utf8");
 const pagesPackage = readFileSync("scripts/package-pages.sh", "utf8");
 const archiveTests = readFileSync("scripts/test-validate-pages-archive.py", "utf8");
+const pagesAction = readFileSync(".github/actions/deploy-pages/action.yml", "utf8");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 
 function captureBody(text, name, closingIndent) {
@@ -283,8 +284,14 @@ if (!releaseShell.includes("created_at") || !releaseShell.includes("published_at
 if (!workflow.includes("concurrency:\n  group: pages-storage-web-")) throw new Error("Pages concurrency is missing");
 if (!release.includes("needs: build") && !workflow.includes("release:\n    needs: build")) throw new Error("Release does not depend on the tested build");
 if (!workflow.includes("needs: [build, release]")) throw new Error("Pages deployment is not downstream of publication");
-if (deploy.indexOf("actions/upload-pages-artifact@v5.0.0") < 0 || deploy.indexOf("actions/deploy-pages@v5.0.1") < 0) throw new Error("Pages ordering is not explicit");
-if (workflow.indexOf("actions/upload-pages-artifact@v5.0.0") > workflow.indexOf("actions/deploy-pages@v5.0.1")) throw new Error("Pages deployment precedes artifact upload");
+if (deploy.indexOf("actions/upload-pages-artifact@v5.0.0") < 0 || deploy.includes("actions/deploy-pages@") || workflow.includes("actions/deploy-pages@")) throw new Error("Pages upload/deployment migration is incomplete");
+if (deploy.includes("actions: read") || deploy.includes("actions:read")) throw new Error("Pages deployment must not request artifact discovery permission");
+if (deploy.indexOf("- id: pages-upload") < 0 || !workflow.includes("uses: ./.github/actions/deploy-pages")) throw new Error("Pages artifact output or local deployment action is missing");
+if (!workflow.includes("artifact-id: ${{ steps.pages-upload.outputs.artifact_id }}") || !workflow.includes("build-version: ${{ env.RELEASE_SHA }}")) throw new Error("Pages deployment does not receive the exact upload output and build SHA");
+if (workflow.indexOf("actions/upload-pages-artifact@v5.0.0") > workflow.indexOf("uses: ./.github/actions/deploy-pages")) throw new Error("Pages deployment precedes artifact upload");
+if (!pagesAction.includes("scripts/deploy-pages.py") || !pagesAction.includes("PAGES_ARTIFACT_ID: ${{ inputs.artifact-id }}") || !pagesAction.includes("PAGES_BUILD_VERSION: ${{ inputs.build-version }}")) throw new Error("local Pages action does not invoke the direct client with exact inputs");
+if (!pagesAction.includes("run: exec python3 \"$PAGES_SCRIPT\"")) throw new Error("local Pages action does not execute the direct client explicitly");
+if (!verify.includes("python3 scripts/test-deploy-pages.py")) throw new Error("verification workflow does not run direct Pages client tests");
 for (const fragment of ["validate-pages-archive.py", "pages_digest", "pages_size"]) if (!workflow.includes(fragment)) throw new Error(`Pages artifact contract is missing ${fragment}`);
 for (const line of workflow.split("\n").filter((line) => line.includes("gh api"))) if (!line.includes("--hostname github.com")) throw new Error(`GitHub API is not pinned: ${line}`);
 if (!packageShell.includes("timeout --signal=TERM --kill-after=5s 300s bash scripts/package-pages.sh") || !packageShell.includes("validate-pages-archive.py")) throw new Error("Pages packaging commands are not directly bounded");

@@ -1,0 +1,24 @@
+name: Deploy verified Pages artifact
+description: Deploy the caller's uploaded artifact through the GitHub Pages API.
+inputs:
+  artifact-id:
+    description: ID returned by the caller's Pages artifact upload.
+    required: true
+  build-version:
+    description: Exact source commit verified by the caller.
+    required: true
+outputs:
+  page_url:
+    description: Published URL, returned only after deployment succeeds.
+    value: ${{ steps.deploy.outputs.page_url }}
+runs:
+  using: composite
+  steps:
+    - id: deploy
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PAGES_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        PAGES_BUILD_VERSION: ${{ inputs.build-version }}
+        PAGES_SCRIPT: ${{ github.action_path }}/../../../scripts/deploy-pages.py
+      run: exec python3 "$PAGES_SCRIPT"

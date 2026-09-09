@@ -162,6 +162,12 @@ jobs:
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 300s npm run verify:security
 
+      - name: Test direct Pages deployment client
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=5s 300s python3 scripts/test-deploy-pages.py
+
       - name: Unit tests
         shell: bash
         run: |

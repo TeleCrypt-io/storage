@@ -590,7 +590,8 @@ jobs:
           release_commit="$(git rev-parse 'refs/remotes/origin/release-tag^{commit}')"
           test "$release_commit" = "$RELEASE_SHA" -a "$(git rev-parse HEAD)" = "$RELEASE_SHA" -a "$release_commit" = "$(git rev-parse refs/remotes/origin/main)"
           git merge-base --is-ancestor "$release_commit" refs/remotes/origin/main
-      - uses: actions/upload-pages-artifact@v5.0.0
+      - id: pages-upload
+        uses: actions/upload-pages-artifact@v5.0.0
         with: {path: dist}
       - name: Revalidate source before Pages deployment
         shell: bash
@@ -616,4 +617,7 @@ jobs:
           test "$release_commit" = "$RELEASE_SHA" -a "$(git rev-parse HEAD)" = "$RELEASE_SHA" -a "$release_commit" = "$(git rev-parse refs/remotes/origin/main)"
           git merge-base --is-ancestor "$release_commit" refs/remotes/origin/main
       - id: deployment
-        uses: actions/deploy-pages@v5.0.1
+        uses: ./.github/actions/deploy-pages
+        with:
+          artifact-id: ${{ steps.pages-upload.outputs.artifact_id }}
+          build-version: ${{ env.RELEASE_SHA }}
