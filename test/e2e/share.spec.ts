@@ -25,7 +25,9 @@ test("multi-participant share: userA and userB exchange a file", async ({ contex
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
   const consoleA = auditConsole(pageA);
-  const consoleB = auditConsole(pageB);
+  const consoleB = auditConsole(pageB, [
+    /^Failed to load resource: the server responded with a status of 403 \(Forbidden\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/rooms\/![^/]+%3Alocalhost%3A8008\/members\)$/,
+  ]);
 
   await loginViaUI(pageA, userA);
   // Sharing a vault may attempt to send historical room keys. Establish the

@@ -12,6 +12,7 @@ const EXPECTED_LOCAL_CONSOLE = [
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/room_keys\/version\)$/,
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/unstable\/org\.matrix\.msc4143\/rtc\/transports\)$/,
   /^Adding default global (?:override|underride) push rule \.(?:org\.matrix\.msc3786\.rule\.room\.server_acl|org\.matrix\.msc3914\.rule\.room\.call) \(http:\/\/localhost:5173\/@vite\/client\)$/,
+  /^resetCrossSigning: Secret storage is not yet set up; not exporting keys to secret storage yet\. \(http:\/\/localhost:5173\/@vite\/client\)$/,
 ];
 
 /** Fail a test on every unexpected browser warning, error, or uncaught page error. */

@@ -16,9 +16,7 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
 
   const contextA = await contexts.create();
   const pageA = await contextA.newPage();
-  const consoleA = auditConsole(pageA, [
-    /resetCrossSigning: Secret storage is not yet set up/,
-  ]);
+  const consoleA = auditConsole(pageA);
 
   const original = Buffer.from("lost laptop recovery test content, via the UI\n".repeat(10));
 
