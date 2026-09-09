@@ -27,6 +27,7 @@ type CleanupFailureHandler = (error: unknown) => Promise<unknown[]>;
 interface E2eTestFixtures {
   context: BrowserContext;
   contexts: BrowserContexts;
+  failureHold: void;
 }
 
 interface E2eWorkerFixtures {
@@ -173,40 +174,37 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     }
   },
 
+  failureHold: [async ({ holdFailedBrowser, contexts }, provide, testInfo) => {
+    await provide();
+    if (testInfo.status === testInfo.expectedStatus) return;
+
+    testInfo.setTimeout(0);
+    // Snapshot the complete primary failure before any trace finalization or hold operation.
+    const failureDetail = formatTestFailure(testInfo);
+    const traceErrors = await contexts.stopTraces();
+    const failures = [...traceErrors];
+    try {
+      await holdFailedBrowser(
+        `storage_local_e2e_test_failed\n${failureDetail}\n` +
+        (traceErrors.length === 0
+          ? "browser context traces finalized"
+          : `browser context trace errors=${traceErrors.map((error) => formatDiagnosticError(error)).join("; ")}`),
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      failures.unshift(new Error(failureDetail));
+      throw combinedFailure("Storage local E2E failure preservation failed", failures);
+    }
+  }, { auto: true }],
+
   // Keep the primary Playwright context in the same registry as secondary contexts. The fixture
   // intentionally does not close it: registry teardown runs after afterEach, so the failure hold
   // sees every live browser context and every trace.
   context: async ({ contexts }, provide) => {
     await provide(await contexts.create());
   },
-});
-
-test.afterEach(async ({ holdFailedBrowser, contexts }, testInfo) => {
-  // The contexts fixture retains errors from dependent fixtures and the test body so it can
-  // preserve traces before closing browsers. During afterEach, Playwright can therefore expose
-  // the primary error before updating status from the expected `passed` value.
-  const wrappedFailurePending = testInfo.expectedStatus === "passed" && testInfo.errors.length > 0;
-  if (testInfo.status === testInfo.expectedStatus && !wrappedFailurePending) return;
-
-  testInfo.setTimeout(0);
-  // Snapshot the complete primary failure before any trace finalization or hold operation.
-  const failureDetail = formatTestFailure(testInfo);
-  const traceErrors = await contexts.stopTraces();
-  const failures = [...traceErrors];
-  try {
-    await holdFailedBrowser(
-      `storage_local_e2e_test_failed\n${failureDetail}\n` +
-      (traceErrors.length === 0
-        ? "browser context traces finalized"
-        : `browser context trace errors=${traceErrors.map((error) => formatDiagnosticError(error)).join("; ")}`),
-    );
-  } catch (error) {
-    failures.push(error);
-  }
-  if (failures.length > 0) {
-    failures.unshift(new Error(failureDetail));
-    throw combinedFailure("Storage local E2E failure preservation failed", failures);
-  }
 });
 
 export { expect };
