@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import { registerE2eUser } from "./testUsers";
 import { createVault, loginViaUI, openVaultByName, uploadFile, downloadFileBytes } from "./uiHelpers";
 

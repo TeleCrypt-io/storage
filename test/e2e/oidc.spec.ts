@@ -1,4 +1,4 @@
-import { test } from "@playwright/test";
+import { test } from "./fixtures";
 import { registerE2eUser } from "./testUsers";
 import { createVault, loginViaUI } from "./uiHelpers";
 
