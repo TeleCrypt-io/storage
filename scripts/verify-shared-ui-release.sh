@@ -6,13 +6,21 @@ set -euo pipefail
 # source publishes a successor and this checkout updates its provenance.
 ui_tag="v0.1.8"
 ui_asset="telecrypt-io-ui-0.1.8.tgz"
-temporary_dir="$(mktemp -d)"
+if test -n "${HARNESS_ARTIFACTS_ROOT:-}"; then
+  temporary_dir="$(mktemp -d "$HARNESS_ARTIFACTS_ROOT/storage-ui-release-XXXXXX")"
+else
+  temporary_dir="$(mktemp -d)"
+fi
 cleanup() {
   local status=$? cleanup_status=0
-  rm -rf -- "$temporary_dir" || cleanup_status=$?
-  if test "$status" -eq 0 && test "$cleanup_status" -ne 0; then
-    printf 'shared UI release cleanup failed (status %s)\n' "$cleanup_status" >&2
-    status="$cleanup_status"
+  if test "$status" -eq 0; then
+    rm -rf -- "$temporary_dir" || cleanup_status=$?
+    if test "$cleanup_status" -ne 0; then
+      printf 'shared UI release cleanup failed (status %s)\n' "$cleanup_status" >&2
+      status="$cleanup_status"
+    fi
+  else
+    printf 'shared UI release evidence retained at %s\n' "$temporary_dir" >&2
   fi
   exit "$status"
 }

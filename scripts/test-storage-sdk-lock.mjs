@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,22 +78,20 @@ for (const [label, mutation] of [
   assert.throws(() => validateStorageSdkLock(packageJson, lockJson, invalidRecord), /release record/u, label);
 }
 
-const directory = mkdtempSync(join(tmpdir(), "storage-sdk-release-record-"));
-try {
-  const archive = join(directory, "storage-0.5.29.tgz");
-  const bytes = Buffer.from("package-bytes");
-  const record = {
-    ...validRecord,
-    tarball_size: bytes.length,
-    tarball_sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-    tarball_sha512: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
-  };
-  writeFileSync(archive, bytes);
-  assert.equal(validateStorageSdkReleaseBytes(archive, record), true);
-  writeFileSync(archive, Buffer.from("different1234"));
-  assert.throws(() => validateStorageSdkReleaseBytes(archive, record), /digests/u);
-} finally {
-  rmSync(directory, { recursive: true, force: true });
-}
+const configuredRoot = process.env.HARNESS_ARTIFACTS_ROOT;
+const directory = mkdtempSync(join(configuredRoot || tmpdir(), "storage-sdk-release-record-"));
+console.error(`Storage SDK lock test evidence retained at ${directory}`);
+const archive = join(directory, "storage-0.5.29.tgz");
+const bytes = Buffer.from("package-bytes");
+const record = {
+  ...validRecord,
+  tarball_size: bytes.length,
+  tarball_sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  tarball_sha512: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+};
+writeFileSync(archive, bytes);
+assert.equal(validateStorageSdkReleaseBytes(archive, record), true);
+writeFileSync(archive, Buffer.from("different1234"));
+assert.throws(() => validateStorageSdkReleaseBytes(archive, record), /digests/u);
 
 console.log("storage SDK lock preflight regression checks passed");
