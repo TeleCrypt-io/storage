@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { formatOperationError } from "./formatOperationError";
 import {
   PENDING_REVOCATION_STORAGE_KEY,
+  SESSION_CLEANUP_PERSISTENCE_ERROR,
   SESSION_STORAGE_KEY,
   clearPendingRevocation,
   clearSession,
@@ -294,7 +295,16 @@ describe("tab-scoped session persistence", () => {
 
   it("rejects a stored null pending-revocation value as invalid state", () => {
     sessionStorage.setItem(PENDING_REVOCATION_STORAGE_KEY, "null");
-    expect(() => loadPendingRevocation()).toThrow("Stored pending revocation state is invalid");
+    let caught: unknown;
+    try {
+      loadPendingRevocation();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      message: SESSION_CLEANUP_PERSISTENCE_ERROR,
+      cause: { message: "Stored pending revocation state is invalid" },
+    });
   });
 
   it("preserves pending-revocation read failures", () => {

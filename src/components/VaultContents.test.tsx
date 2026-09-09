@@ -358,7 +358,7 @@ describe("VaultContents mutation identity", () => {
     expect(oversized.arrayBuffer).not.toHaveBeenCalled();
     expect(core.uploadFile).not.toHaveBeenCalled();
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit.",
+      "File exceeds the 128 MiB limit",
     );
   });
 
@@ -374,7 +374,7 @@ describe("VaultContents mutation identity", () => {
     expect(core.createSubfolder).not.toHaveBeenCalled();
     expect(core.uploadFile).not.toHaveBeenCalled();
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit.",
+      "File exceeds the 128 MiB limit",
     );
   });
 
@@ -397,7 +397,7 @@ describe("VaultContents mutation identity", () => {
 
     expect(core.uploadFile).not.toHaveBeenCalled();
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit.",
+      "File exceeds the 128 MiB limit",
     );
   });
 
@@ -412,7 +412,7 @@ describe("VaultContents mutation identity", () => {
     expect(oversized.arrayBuffer).not.toHaveBeenCalled();
     expect(core.uploadFile).not.toHaveBeenCalled();
     expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit.",
+      "File exceeds the 128 MiB limit",
     );
   });
 

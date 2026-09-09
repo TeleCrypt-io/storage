@@ -270,8 +270,8 @@ describe("formatOperationError", () => {
       stack: { get: () => { throw new Error("stack getter failed"); } },
     });
     const throwingDetail = formatOperationError(throwingError);
-    expect(throwingDetail).toContain("name=[property unavailable: name getter failed]");
-    expect(throwingDetail).toContain("stack=[property unavailable: stack getter failed]");
+    expect(throwingDetail).toContain("name=[property unavailable: name getter failed; name=Error");
+    expect(throwingDetail).toContain("stack=[property unavailable: stack getter failed; name=Error");
 
     const getterFailure = {};
     Object.defineProperty(getterFailure, "details", {
@@ -280,7 +280,7 @@ describe("formatOperationError", () => {
       },
     });
     expect(formatOperationError(getterFailure)).toContain(
-      "details=[property unavailable: diagnostic getter failed]",
+      "details=[property unavailable: diagnostic getter failed; name=Error",
     );
   });
 

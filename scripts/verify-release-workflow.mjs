@@ -187,7 +187,7 @@ const assetRecheckLine = releaseShell.split("\n").find((line) =>
   line.includes('((.assets|type)=="array" and (.assets|length)==1)'),
 );
 if (!assetRecheckLine) throw new Error("draft asset recheck predicate is missing");
-const assetRecheckMatch = assetRecheckLine.match(/'([^']+)' "\$json" >\/dev\/null$/u);
+const assetRecheckMatch = assetRecheckLine.match(/'([^']+)' "\$json"(?: >\/dev\/null)?$/u);
 if (!assetRecheckMatch) throw new Error("draft asset recheck predicate cannot be extracted");
 const assetRecheckPredicate = assetRecheckMatch[1];
 const expectedAssetRecheckPredicate = '((.assets|type)=="array" and (.assets|length)==1) and (.assets[0]|type=="object" and (.id|type=="number" and .>0 and floor==.) and .name==$name and .state=="uploaded" and .size==$size and .digest==$digest)';

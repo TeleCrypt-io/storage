@@ -32,14 +32,14 @@ function escapeControlCharacters(value: string): string {
  * control characters. There is deliberately no output-size limit here.
  */
 export function sanitizeDiagnosticText(value: string): string {
-  let sanitized = escapeControlCharacters(value);
+  let sanitized = value;
   sanitized = sanitized.replace(URI_CREDENTIAL_PATTERN, "$1[REDACTED]@");
   sanitized = sanitized.replace(URI_SECRET_PARAMETER_PATTERN, "$1[REDACTED]");
   sanitized = sanitized.replace(BEARER_PATTERN, "$1[REDACTED]");
   sanitized = sanitized.replace(QUOTED_SENSITIVE_ASSIGNMENT_PATTERN, "$1$2[REDACTED]$2");
   sanitized = sanitized.replace(UNQUOTED_SENSITIVE_ASSIGNMENT_PATTERN, "$1[REDACTED]");
   sanitized = sanitized.replace(TOKEN_VALUE_PATTERN, "$1[REDACTED]");
-  return sanitized;
+  return escapeControlCharacters(sanitized);
 }
 
 function primitiveDetail(value: unknown): string | undefined {

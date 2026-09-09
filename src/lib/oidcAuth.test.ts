@@ -2,7 +2,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { beginOidcLogin, completeOidcLoginFromCallback } from "./oidcAuth";
 import { getRuntimeSettings } from "./buildConfig";
-import { OIDC_LOGIN_INTENT_STORAGE_KEY, clearPendingRevocation } from "./session";
+import {
+  OIDC_LOGIN_INTENT_STORAGE_KEY,
+  clearPendingRevocation,
+} from "./session";
 import * as core from "./core";
 import * as revocation from "./revokeSession";
 
@@ -67,6 +70,8 @@ beforeEach(() => {
   vi.mocked(core.beginAuthorizationCodeFlow).mockResolvedValue(
     `${METADATA.authorization_endpoint}?x=1&state=two`,
   );
+  vi.mocked(core.completeAuthorizationCodeFlow).mockReset();
+  vi.mocked(core.whoAmI).mockReset();
   vi.mocked(revocation.revokeMatrixSession).mockResolvedValue(undefined);
   const tabStorage = memoryStorage();
   const persistentStorage = memoryStorage();
@@ -290,7 +295,7 @@ describe("beginOidcLogin stable device id", () => {
 
   it("retains a pending marker when clearing its matching session fails", async () => {
     const pending = { homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" };
-    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify(pending));
+    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify([pending]));
     sessionStorage.setItem(
       "telecrypt-io-ui:session",
       JSON.stringify({
@@ -311,14 +316,14 @@ describe("beginOidcLogin stable device id", () => {
       return null;
     });
 
-    await expect(beginOidcLogin()).rejects.toThrow("Session cleanup could not be persisted");
+    await expect(beginOidcLogin()).rejects.toThrow("Session persistence failed");
     expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toContain("old-access");
   });
 
   it("retains a pending marker when cancellation follows remote revocation", async () => {
     const controller = new AbortController();
     const pending = { homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" };
-    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify(pending));
+    sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify([pending]));
     vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
       expect(clearPendingRevocation(target)).toBe(true);
       controller.abort();
@@ -526,12 +531,15 @@ describe("beginOidcLogin stable device id", () => {
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(AggregateError);
-    expect((caught as AggregateError).message).toBe("Sign-in failed");
-    expect((caught as AggregateError).errors).toEqual([
-      expect.objectContaining({ message: "Sign-in failed" }),
-      revocationError,
-    ]);
+    expect(caught).toMatchObject({
+      message: "Sign-in failed",
+      cause: expect.objectContaining({
+        errors: [
+          expect.objectContaining({ message: "Sign-in failed" }),
+          revocationError,
+        ],
+      }),
+    });
     expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toContain("new-access");
   });
 
