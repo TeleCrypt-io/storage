@@ -19,7 +19,7 @@ const validRecord = {
   schema: 1,
   package: STORAGE_SDK_PACKAGE,
   version: STORAGE_SDK_VERSION,
-  tag: "v0.5.27",
+  tag: "v0.5.29",
   commit: "1".repeat(40),
   tarball_sha256: `sha256:${"b".repeat(64)}`,
   tarball_sha512: validIntegrity,
@@ -80,7 +80,7 @@ for (const [label, mutation] of [
 
 const directory = mkdtempSync(join(tmpdir(), "storage-sdk-release-record-"));
 try {
-  const archive = join(directory, "storage-0.5.27.tgz");
+  const archive = join(directory, "storage-0.5.29.tgz");
   const bytes = Buffer.from("package-bytes");
   const record = {
     ...validRecord,

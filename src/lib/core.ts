@@ -2,7 +2,7 @@
  * Browser-facing SDK boundary.
  *
  * The repository is intentionally pinned to the exact published storage SDK
- * 0.5.27. The SDK barrel is the sole operation/OIDC authority; this boundary
+ * 0.5.29. The SDK barrel is the sole operation/OIDC authority; this boundary
  * adds only the UI-specific ownership helper without copying SDK implementation
  * into the UI.
  */
