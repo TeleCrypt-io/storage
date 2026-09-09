@@ -48,6 +48,9 @@ test("create subfolder, upload inside, rename and delete subfolder", async ({ pa
 
   const bytes = Buffer.from("inside subfolder");
   await uploadFile(page, "inside.txt", "text/plain", bytes);
+  page.once("dialog", (d) => d.accept());
+  await page.locator('[data-testid="file-item"]', { hasText: "inside.txt" }).getByTestId("delete-file").click();
+  await expect(page.getByTestId("no-files")).toBeVisible({ timeout: 20000 });
 
   await page.locator('[data-testid="breadcrumb-item"]', { hasText: "Parent" }).click();
   await expect(page.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", /.+/);
