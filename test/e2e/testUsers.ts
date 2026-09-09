@@ -39,9 +39,10 @@ function newDeviceId(): string {
 }
 
 async function registerUserInMas(username: string, password: string): Promise<void> {
+  const email = `${username}@example.com`;
   const diagnostic = (value: unknown): string => {
     let text = typeof value === "string" ? value : inspect(value, { depth: null, maxStringLength: null, maxArrayLength: null });
-    for (const secret of [password, username]) {
+    for (const secret of [password, email, username]) {
       if (secret) text = text.split(secret).join("<redacted>");
     }
     return text;
@@ -55,6 +56,8 @@ async function registerUserInMas(username: string, password: string): Promise<vo
     username,
     "--password",
     password,
+    "--email",
+    email,
     "--yes",
     "--ignore-password-complexity",
     "-c",
