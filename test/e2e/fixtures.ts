@@ -71,11 +71,11 @@ function combinedFailure(message: string, errors: unknown[]): Error {
 export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   // This worker fixture has no browser dependency, so the configured private Harness module is
   // loaded and validated before Playwright can create the worker browser.
-  holdFailedBrowser: [async ({}, use) => {
-    await use(await loadHoldFailedBrowser());
+  holdFailedBrowser: [async ({ browserName: _browserName }, provide) => {
+    await provide(await loadHoldFailedBrowser());
   }, { scope: "worker", auto: true }],
 
-  contexts: async ({ browser, baseURL, contextOptions, holdFailedBrowser }, use, testInfo) => {
+  contexts: async ({ browser, baseURL, contextOptions, holdFailedBrowser }, provide, testInfo) => {
     const contexts: TrackedContext[] = [];
 
     const stopTraces = async (onError?: CleanupFailureHandler): Promise<unknown[]> => {
@@ -141,7 +141,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
 
     let useError: unknown;
     try {
-      await use(browserContexts);
+      await provide(browserContexts);
     } catch (error) {
       useError = error;
     }
@@ -176,8 +176,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   // Keep the primary Playwright context in the same registry as secondary contexts. The fixture
   // intentionally does not close it: registry teardown runs after afterEach, so the failure hold
   // sees every live browser context and every trace.
-  context: async ({ contexts }, use) => {
-    await use(await contexts.create());
+  context: async ({ contexts }, provide) => {
+    await provide(await contexts.create());
   },
 });
 
