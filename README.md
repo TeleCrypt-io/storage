@@ -42,9 +42,10 @@ The exact-tag workflow creates and verifies one exact published, non-prerelease 
 Release. Before starting the workflow, verify that the active repository ruleset protects the
 `storage-web-v*` tags from moving or deletion. The workflow builds and tests the site, creates or
 resumes one exact draft Release, verifies its metadata and bytes, publishes it, then verifies the
-public download and deploys those exact bytes to GitHub Pages production. A rerun may reproduce the
-local package for comparison, but it never replaces a published asset. Any source or metadata change
-fails closed and requires a new version.
+public download. Production deployment requires a separate owner-authorized workflow dispatch at
+the exact published tag; that dispatch rechecks the immutable Release and deploys its exact archive
+bytes to GitHub Pages. A rerun may reproduce the local package for comparison, but it never replaces
+a published asset. Any source or metadata change fails closed and requires a new version.
 
 The Cloudflare Pages Git integration builds only the `stage` branch. That branch is advanced only to
 a commit that has already passed the repository checks and is identified by a published immutable
@@ -99,11 +100,12 @@ for the canonical ordering and stopping boundary.
 Pushes and pull requests to `main` only verify the source. A protected annotated
 `storage-web-v<major>.<minor>.<patch>` tag runs the exact-version release workflow; it checks the
 tag/source/main/package identity, installs dependencies, runs tests/lint/typecheck/build, and
-creates the single immutable Release archive. GitHub Pages deployment occurs only after the
-published Release is rechecked and its archive bytes match the Release API digest. Cloudflare Pages
-stage builds the same released commit from `stage`, with previews disabled; its deployment record is
-accepted only when its source commit matches the immutable Release. The source is environment-neutral,
-and the browser derives its backend from the canonical site hostname. VM activation, promotion, and
+creates the single immutable Release archive. An owner-authorized production promotion dispatches
+the same workflow at that exact tag; GitHub Pages deployment occurs only after the published Release
+is rechecked and its archive bytes match the Release API digest. Cloudflare Pages stage builds the
+same released commit from `stage`, with previews disabled; its deployment record is accepted only
+when its source commit matches the immutable Release. The source is environment-neutral, and the
+browser derives its backend from the canonical site hostname. VM activation, promotion, and
 authenticated acceptance follow the operator-managed Harness deployment contract; this repository
 does not publish or duplicate those private operational steps.
 

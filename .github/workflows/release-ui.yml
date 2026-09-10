@@ -3,6 +3,7 @@ name: Build and publish storage site release
 on:
   push:
     tags: ["storage-web-v*"]
+  workflow_dispatch:
 
 permissions: {contents: read}
 
@@ -452,8 +453,11 @@ jobs:
               download_asset "$probe" "$RUNNER_TEMP/published.pages.zip"
               ;;
             published)
-              # Only an exact immutable Release is recoverable on a rerun after downstream failure.
-              test "${GITHUB_RUN_ATTEMPT:-1}" -gt 1
+              # An exact immutable Release is recoverable on a rerun or an explicit production
+              # deployment dispatched at the release tag.
+              if test "${GITHUB_EVENT_NAME:-}" != workflow_dispatch; then
+                test "${GITHUB_RUN_ATTEMPT:-1}" -gt 1
+              fi
               verify_published "$probe" "$release_id"
               download_asset "$probe" "$RUNNER_TEMP/published.pages.zip"
               ;;
@@ -466,6 +470,7 @@ jobs:
 
   deploy:
     needs: [build, release]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions: {contents: read, pages: write, id-token: write}

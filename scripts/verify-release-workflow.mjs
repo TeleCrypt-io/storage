@@ -83,7 +83,7 @@ function exactPublished(tag) {
   };
 }
 
-function publicationAction(probe, attempt, tag = "storage-web-v1.2.3") {
+function publicationAction(probe, attempt, tag = "storage-web-v1.2.3", eventName = "push") {
   if (probe === null) return "create-draft";
   if (probe.transport === "timeout" || probe.transport === "error") throw new Error("transport failure");
   if (probe.tag_name !== tag || probe.name !== tag || probe.body !== `Release ${tag}` || probe.target_commitish !== "a".repeat(40) || probe.prerelease !== false) throw new Error("identity conflict");
@@ -94,7 +94,7 @@ function publicationAction(probe, attempt, tag = "storage-web-v1.2.3") {
     return "reuse-draft";
   }
   if (probe.draft === false) {
-    if (attempt <= 1 || probe.immutable !== true || probe.created_at !== "2026-08-24T00:00:00Z" || probe.published_at !== "2026-08-24T00:00:01Z" || probe.assets?.length !== 1) throw new Error("published conflict");
+    if ((attempt <= 1 && eventName !== "workflow_dispatch") || probe.immutable !== true || probe.created_at !== "2026-08-24T00:00:00Z" || probe.published_at !== "2026-08-24T00:00:01Z" || probe.assets?.length !== 1) throw new Error("published conflict");
     return "reuse-published";
   }
   throw new Error("unknown state");
@@ -146,6 +146,7 @@ try {
 if (!rejected) throw new Error("Release list without a terminal page was accepted");
 if (publicationAction({ id: 42, tag_name: tag, name: tag, body: `Release ${tag}`, target_commitish: "a".repeat(40), created_at: "2026-08-24T00:00:00Z", published_at: null, draft: true, prerelease: false, assets: [] }, 1, tag) !== "reuse-draft") throw new Error("draft was not reusable");
 if (publicationAction(exactPublished(tag), 2, tag) !== "reuse-published") throw new Error("exact rerun was not reusable");
+if (publicationAction(exactPublished(tag), 1, tag, "workflow_dispatch") !== "reuse-published") throw new Error("exact production dispatch was not reusable");
 const exactDraft = { id: 42, tag_name: tag, name: tag, body: `Release ${tag}`, target_commitish: "a".repeat(40), created_at: "2026-08-24T00:00:00Z", published_at: null, draft: true, prerelease: false, immutable: false, assets: [{ id: 43, name: "storage-web-1.2.3.pages.zip", state: "uploaded", size: 10, digest: `sha256:${"a".repeat(64)}` }] };
 finalPublishRecheck(exactDraft, tag);
 for (const mutation of ["id", "tag_name", "name", "body", "target_commitish", "draft", "prerelease", "immutable", "created_at", "published_at", "asset_state", "asset_size", "assets", "asset_id", "duplicate_name", "duplicate_id"]) {
@@ -282,8 +283,11 @@ if (releaseShell.includes("max_release_pages") || releaseShell.includes("Release
 if (releaseShell.includes("/releases/tags/$RELEASE_TAG")) throw new Error("draft-blind tag endpoint remains the discovery authority");
 if (!releaseShell.includes("created_at") || !releaseShell.includes("published_at")) throw new Error("draft timestamp checks are missing");
 if (!workflow.includes("concurrency:\n  group: pages-storage-web-")) throw new Error("Pages concurrency is missing");
+if (!workflow.includes("  workflow_dispatch:")) throw new Error("owner-authorized production dispatch is missing");
 if (!release.includes("needs: build") && !workflow.includes("release:\n    needs: build")) throw new Error("Release does not depend on the tested build");
 if (!workflow.includes("needs: [build, release]")) throw new Error("Pages deployment is not downstream of publication");
+if (!deploy.includes("if: ${{ github.event_name == 'workflow_dispatch' }}")) throw new Error("tag publication can still deploy production");
+if (!releaseShell.includes('GITHUB_EVENT_NAME:-}" != workflow_dispatch')) throw new Error("production dispatch cannot reuse the exact immutable Release");
 if (deploy.indexOf("actions/upload-pages-artifact@v5.0.0") < 0 || deploy.includes("actions/deploy-pages@") || workflow.includes("actions/deploy-pages@")) throw new Error("Pages upload/deployment migration is incomplete");
 if (deploy.includes("actions: read") || deploy.includes("actions:read")) throw new Error("Pages deployment must not request artifact discovery permission");
 if (deploy.indexOf("- id: pages-upload") < 0 || !workflow.includes("uses: ./.github/actions/deploy-pages")) throw new Error("Pages artifact output or local deployment action is missing");
