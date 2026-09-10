@@ -267,6 +267,7 @@ if (workflow.includes("github.run_attempt")) throw new Error("artifact names var
 if (!workflow.includes("name: storage-pages-${{ github.run_id }}-${{ github.sha }}") || !workflow.includes("overwrite: true")) throw new Error("Pages artifact reruns are not stable and overwritable");
 if ([workflow, verify, sharedUiRelease].some((text) => text.includes("--output"))) throw new Error("binary downloads still use unsupported gh api --output");
 if (!releaseShell.includes("upload_url") || !releaseShell.includes("uploads.github.com") || !releaseShell.includes('"$upload_url?name=$asset_name"')) throw new Error("Release asset upload does not use the authoritative uploads.github.com URL");
+if (!releaseShell.includes('capture_binary "$output" gh api --hostname github.com')) throw new Error("Release asset download does not invoke GitHub CLI");
 for (const fragment of ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_PARAMETERS", "GH_HOST: github.com", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
   if (!workflow.includes(fragment)) throw new Error(`transport hardening is missing ${fragment}`);
 }

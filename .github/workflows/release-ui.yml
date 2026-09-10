@@ -355,7 +355,7 @@ jobs:
           download_asset() {
             local json="$1" output="$2" asset_id
             asset_id="$(api_value "$json" jq -er '.assets[0].id | select(type=="number" and .>0 and floor==.)' "$json")"
-            capture_binary "$output" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            capture_binary "$output" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
             test "$(wc -c <"$output")" = "$EXPECTED_SIZE"
             test "sha256:$(sha256sum "$output" | awk '{print $1}')" = "$EXPECTED_DIGEST"
             cmp -s "$archive" "$output"
