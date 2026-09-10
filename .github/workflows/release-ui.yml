@@ -130,20 +130,6 @@ jobs:
             replay_api_failure "$body" "$error" "$semantic_output" || replay_status="$?"
             return "$status"
           }
-          api_expect() {
-            local body="$1" expected="$2" value status
-            shift 2
-            if value="$(api_value "$body" "$@")"; then
-              :
-            else
-              status="$?"
-              return "$status"
-            fi
-            if test "$value" = "$expected"; then return 0; fi
-            printf 'API semantic mismatch (expected %s, got %s)\n' "$expected" "$value" >&2
-            replay_api_failure "$body" "$body.semantic.err"
-            return 1
-          }
           require_api_json() {
             local body="$1" transport_error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
             shift 2
@@ -319,6 +305,20 @@ jobs:
             fi
             replay_api_failure "$body" "$error" "$semantic_output" || replay_status="$?"
             return "$status"
+          }
+          api_expect() {
+            local body="$1" expected="$2" value status
+            shift 2
+            if value="$(api_value "$body" "$@")"; then
+              :
+            else
+              status="$?"
+              return "$status"
+            fi
+            if test "$value" = "$expected"; then return 0; fi
+            printf 'API semantic mismatch (expected %s, got %s)\n' "$expected" "$value" >&2
+            replay_api_failure "$body" "$body.semantic.err"
+            return 1
           }
           require_api_json() {
             local body="$1" transport_error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"

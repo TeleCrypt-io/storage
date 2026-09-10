@@ -184,6 +184,12 @@ const build = job("build");
 const releaseShell = step(release, "Create or reuse the exact draft Release");
 const packageShell = step(build, "Package the deterministic Pages artifact");
 const deployVerifyShell = step(deploy, "Download and verify the immutable Release artifact");
+if (
+  !releaseShell.includes("api_expect() {") ||
+  releaseShell.indexOf("api_expect() {") > releaseShell.indexOf('api_expect "$json"')
+) {
+  throw new Error("Release API equality helper is not defined before use in its shell step");
+}
 const assetRecheckLine = releaseShell.split("\n").find((line) =>
   line.includes('--arg name "storage-web-${RELEASE_TAG#storage-web-v}.pages.zip"') &&
   line.includes('((.assets|type)=="array" and (.assets|length)==1)'),
