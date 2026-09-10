@@ -18,7 +18,6 @@ import {
   isFileWithinLimit,
   isSafeFileName,
   isSafeRelativePath,
-  isUploadBatchWithinLimit,
   readFileWithinLimit,
 } from "../lib/fileLimits";
 import type { Selection } from "./DetailsPanel";
@@ -26,7 +25,6 @@ import type { Selection } from "./DetailsPanel";
 const POLL_MS = 2500;
 const UNTITLED_SUBFOLDER = "Untitled folder";
 const INVALID_UPLOAD_ERROR = "The upload selection contains an invalid name or path";
-const UPLOAD_BATCH_TOO_LARGE_ERROR = "The upload selection exceeds the batch limit";
 
 type MutationIdentity = {
   storage: TeleCryptIOStorage;
@@ -38,7 +36,6 @@ type MutationIdentity = {
 
 function validateUploadSelection(files: File[], preservePaths: boolean): string[] {
   if (files.some((file) => !isFileWithinLimit(file))) throw new Error(FILE_TOO_LARGE_ERROR);
-  if (!isUploadBatchWithinLimit(files)) throw new Error(UPLOAD_BATCH_TOO_LARGE_ERROR);
   const paths = files.map((file) =>
     preservePaths
       ? (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
