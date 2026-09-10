@@ -19,7 +19,7 @@ const validRecord = {
   schema: 1,
   package: STORAGE_SDK_PACKAGE,
   version: STORAGE_SDK_VERSION,
-  tag: "v0.5.30",
+  tag: "v0.5.31",
   commit: "1".repeat(40),
   tarball_sha256: `sha256:${"b".repeat(64)}`,
   tarball_sha512: validIntegrity,
@@ -81,7 +81,7 @@ for (const [label, mutation] of [
 const configuredRoot = process.env.HARNESS_ARTIFACTS_ROOT;
 const directory = mkdtempSync(join(configuredRoot || tmpdir(), "storage-sdk-release-record-"));
 console.error(`Storage SDK lock test evidence retained at ${directory}`);
-const archive = join(directory, "storage-0.5.30.tgz");
+const archive = join(directory, "storage-0.5.31.tgz");
 const bytes = Buffer.from("package-bytes");
 const record = {
   ...validRecord,

@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/capture-diagnostics.sh
-          sdk_tag=v0.5.30
+          sdk_tag=v0.5.31
           sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
           sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
           sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"

@@ -4,9 +4,9 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const STORAGE_SDK_PACKAGE = "@telecrypt-io/storage";
-export const STORAGE_SDK_VERSION = "0.5.30";
+export const STORAGE_SDK_VERSION = "0.5.31";
 export const STORAGE_SDK_RESOLVED =
-  "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.30.tgz";
+  "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.31.tgz";
 
 const STORAGE_SDK_LOCK_PATH = `node_modules/${STORAGE_SDK_PACKAGE}`;
 const SHA512_SRI = /^sha512-[A-Za-z0-9+/]{86}==$/u;
