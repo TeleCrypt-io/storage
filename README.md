@@ -39,13 +39,12 @@ credential redaction and control-character escaping; diagnostic output is not ca
 with a generic message because it is large or unfamiliar.
 
 The exact-tag workflow creates and verifies one exact published, non-prerelease immutable GitHub
-Release. Repository administrators must enforce both immutable releases and protection against
-moving or deleting the release tag before starting the workflow; the Actions token cannot inspect
-those administrative settings and the workflow's source checks cannot make tag publication atomic.
-The workflow builds and tests the site, creates or resumes one exact draft Release, verifies its
-metadata and bytes, publishes it, then verifies the public download and deploys those exact bytes to
-GitHub Pages production. A rerun may reproduce the local package for comparison, but it never
-replaces a published asset. Any source or metadata change fails closed and requires a new version.
+Release. Before starting the workflow, verify that the active repository ruleset protects the
+`storage-web-v*` tags from moving or deletion. The workflow builds and tests the site, creates or
+resumes one exact draft Release, verifies its metadata and bytes, publishes it, then verifies the
+public download and deploys those exact bytes to GitHub Pages production. A rerun may reproduce the
+local package for comparison, but it never replaces a published asset. Any source or metadata change
+fails closed and requires a new version.
 
 The Cloudflare Pages Git integration builds only the `stage` branch. That branch is advanced only to
 a commit that has already passed the repository checks and is identified by a published immutable
