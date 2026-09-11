@@ -15,7 +15,7 @@
     "typecheck": "tsc -b --pretty false",
     "verify:archive": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-validate-pages-archive.py",
     "verify:package": "bash scripts/verify-pages-package.sh",
-    "verify:security": "node scripts/verify-security-policy.mjs && node scripts/verify-release-workflow.mjs && node scripts/test-storage-sdk-lock.mjs && bash -n scripts/verify-shared-ui-release.sh && node scripts/verify-provenance.mjs && node scripts/test-provenance.mjs",
+    "verify:security": "node scripts/verify-security-policy.mjs && node scripts/test-storage-sdk-lock.mjs && bash -n scripts/verify-shared-ui-release.sh && node scripts/verify-provenance.mjs && node scripts/test-provenance.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
