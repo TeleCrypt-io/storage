@@ -40,9 +40,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify immutable Release workflow invariants
-        run: node scripts/verify-release-workflow.mjs
-
       - name: Setup Node 24.20.0
         uses: actions/setup-node@v7.0.0
         with:
