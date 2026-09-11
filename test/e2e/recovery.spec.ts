@@ -66,6 +66,8 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
 
   // Restore from the captured Recovery Key.
   await pageB.getByTestId("nav-recovery").click();
+  await expect(pageB.getByTestId("recovery-configured-not-ready")).toBeVisible({ timeout: 30_000 });
+  await expect(pageB.getByTestId("setup-recovery")).not.toBeVisible();
   await restoreRecoveryKey(pageB, recoveryKey!);
   const resultText = await pageB.getByTestId("restore-result").textContent();
   expect(resultText).toMatch(/Imported [1-9]\d* of \d+ keys/);

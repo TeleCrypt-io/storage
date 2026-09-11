@@ -41,7 +41,18 @@ function deferred<T>() {
 function fakeStorage(name: string) {
   return {
     name,
-    keys: { isRecoverySetup: vi.fn().mockResolvedValue(true) },
+    keys: {
+      getStatus: vi.fn().mockResolvedValue({
+        state: "ready",
+        crossSigning: {
+          publicKeysOnDevice: true,
+          privateKeysCachedLocally: true,
+          privateKeysInSecretStorage: true,
+        },
+        secretStorage: { ready: true, defaultKeyId: "key" },
+        backupVersion: "1",
+      }),
+    },
   } as unknown as TeleCryptIOStorage;
 }
 
@@ -76,7 +87,7 @@ describe("FileManager refresh identity", () => {
     render(<FileManager />);
     await flush();
 
-    expect(storage.keys.isRecoverySetup).not.toHaveBeenCalled();
+    expect(storage.keys.getStatus).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /set up account recovery/i })).not.toBeInTheDocument();
   });
 

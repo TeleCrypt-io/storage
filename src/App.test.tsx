@@ -115,7 +115,19 @@ function fakeStorage(recoverySetup = false) {
       getAccountDataFromServer: vi.fn().mockResolvedValue(recoverySetup ? {} : null),
     }),
     keys: {
-      isRecoverySetup: vi.fn().mockResolvedValue(recoverySetup),
+      getStatus: vi.fn().mockResolvedValue({
+        state: recoverySetup ? "ready" : "unconfigured",
+        crossSigning: {
+          publicKeysOnDevice: recoverySetup,
+          privateKeysCachedLocally: recoverySetup,
+          privateKeysInSecretStorage: recoverySetup,
+        },
+        secretStorage: {
+          defaultKeyId: recoverySetup ? "key" : null,
+          ready: recoverySetup,
+        },
+        backupVersion: recoverySetup ? "1" : null,
+      }),
       setupRecovery: vi.fn(),
       restoreFromRecoveryKey: vi.fn(),
     },
@@ -1211,7 +1223,6 @@ describe("sharing", () => {
 describe("recovery", () => {
   it("sets up recovery, requires confirm saved, then dismisses key display", async () => {
     const { storage } = await loginAndReachVaults();
-    vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(false);
     vi.mocked(storage.keys.setupRecovery).mockResolvedValue({ recoveryKey: "EsTx 1234 5678" });
 
     const user = userEvent.setup();
@@ -1255,8 +1266,7 @@ describe("recovery", () => {
   });
 
   it("shows restore expandable when account recovery is not configured", async () => {
-    const { storage } = await loginAndReachVaults();
-    vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(false);
+    await loginAndReachVaults();
 
     const user = userEvent.setup();
     await user.click(screen.getByTestId("nav-recovery"));

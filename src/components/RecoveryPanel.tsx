@@ -3,10 +3,30 @@ import { useStorage } from "../context/StorageContext";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import * as core from "../lib/core";
+import type { RecoveryStatus } from "../lib/core";
 
-type AccountRecoveryStatus = "configured" | "not-configured" | "unknown";
+type AccountRecoveryStatus =
+  | "configured"
+  | "configured-not-ready"
+  | "not-configured"
+  | "unknown";
 
 const RECOVERY_OPERATION_TIMEOUT_MS = 30_000;
+
+function classifyRecoveryStatus(status: RecoveryStatus): AccountRecoveryStatus {
+  // Match the SDK's setup preflight: any existing default key, ready secret
+  // storage, or active backup means setup must not be offered again. The SDK's
+  // `state: "partial"` can also describe cross-signing that has no recovery
+  // configuration yet, so that state alone is not enough to hide setup.
+  const hasExistingConfiguration =
+    status.secretStorage.defaultKeyId !== null ||
+    status.secretStorage.ready ||
+    status.backupVersion !== null;
+  if (hasExistingConfiguration) {
+    return status.state === "ready" ? "configured" : "configured-not-ready";
+  }
+  return "not-configured";
+}
 
 function withRecoveryDeadline<T>(
   accountSignal: AbortSignal | null,
@@ -94,14 +114,15 @@ export function RecoveryPanel() {
     if (!expectedStorage) return;
     const generation = identityGenerationRef.current;
     try {
-      const configured = await withRecoveryDeadline(
+      const status = await withRecoveryDeadline(
         accountSignal,
         "Recovery status check",
-        (signal) => expectedStorage.keys.isRecoverySetup(signal),
+        (signal) => expectedStorage.keys.getStatus(signal),
       );
-      const nextStatus = configured ? "configured" : "not-configured";
+      const nextStatus = classifyRecoveryStatus(status);
       if (!isCurrent(expectedStorage, generation)) return;
       setRecoveryStatus(nextStatus);
+      setRestoreExpanded(nextStatus === "configured-not-ready");
       if (reconcile) {
         setSetupIndeterminate(false);
         setError(null);
@@ -143,6 +164,16 @@ export function RecoveryPanel() {
       setRecoveryKey(result.recoveryKey);
       setRecoveryStatus("configured");
     } catch (err) {
+      if (err instanceof core.RecoveryAlreadyConfiguredError) {
+        await refreshStatus(true);
+        if (isCurrent(expectedStorage, generation)) {
+          setSetupIndeterminate(false);
+          setRecoveryStatus("configured-not-ready");
+          setRestoreExpanded(true);
+          setError("Recovery is already configured. Restore with the existing Recovery Key.");
+        }
+        return;
+      }
       if (isCurrent(expectedStorage, generation)) {
         setSetupIndeterminate(true);
         setRecoveryStatus("unknown");
@@ -196,6 +227,7 @@ export function RecoveryPanel() {
       if (!isCurrent(expectedStorage, generation)) return;
       setRestoreResult(result);
       setRestoreKeyInput("");
+      await refreshStatus(true);
     } catch (err) {
       if (isCurrent(expectedStorage, generation)) setError(formatOperationError(err));
     } finally {
@@ -284,6 +316,12 @@ export function RecoveryPanel() {
         <section className="restore-section">
           {recoveryStatus === "configured" && (
             <p data-testid="recovery-active">Recovery is configured for this account.</p>
+          )}
+          {recoveryStatus === "configured-not-ready" && (
+            <div data-testid="recovery-configured-not-ready">
+              <p>Recovery is configured for this account, but this device is not ready to use it.</p>
+              <p>Restore with the existing Recovery Key to use recovery on this device.</p>
+            </div>
           )}
 
           <button
