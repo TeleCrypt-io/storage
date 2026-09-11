@@ -83,9 +83,9 @@ jobs:
           version="${RELEASE_TAG#storage-web-v}"
           test "$version" = "$(node -p 'require("./package.json").version')"
           test "$version" = "$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).packages[""].version')"
-          test "$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')" = 0.6.0
+          test "$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')" = 0.6.1
           bash scripts/verify-shared-ui-release.sh
-          sdk_tag=v0.6.0
+          sdk_tag=v0.6.1
           sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
           sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
           sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"
