@@ -403,7 +403,6 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       const currentStorage = storageRef.current;
       storageRef.current = null;
       const cleanupError = stopClient(currentStorage);
-      if (cleanupError) throw cleanupError;
       accountAbortRef.current?.abort();
       accountAbortRef.current = null;
       oidcAbortRef.current?.abort();
@@ -412,6 +411,8 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       sessionRef.current = null;
       logoutInflightRef.current?.controller.abort();
       logoutInflightRef.current = null;
+      // Finish cancellation before surfacing the stop failure to React.
+      if (cleanupError) throw cleanupError;
     };
   }, []);
 

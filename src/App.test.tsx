@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import * as core from "./lib/core";
@@ -9,6 +9,7 @@ import { formatOperationError } from "./lib/formatOperationError";
 import { runtimeOidcIssuer, getRuntimeSettings } from "./lib/buildConfig";
 import * as revocation from "./lib/revokeSession";
 import * as session from "./lib/session";
+import { StorageProvider, useStorage } from "./context/StorageContext";
 
 vi.mock("./lib/core", async () => {
   const actual = await vi.importActual<typeof import("./lib/core")>("./lib/core");
@@ -595,6 +596,27 @@ describe("login", () => {
     const { storage, view } = await loginAndReachVaults();
     view.unmount();
     expect(storage.stopClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels account work before reporting a client-stop failure on unmount", async () => {
+    const storage = fakeStorage();
+    const failure = new Error("client stop failed");
+    storage.stopClient.mockImplementation(() => { throw failure; });
+    vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
+      issuer: runtimeOidcIssuer(),
+      token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+    } as never);
+    vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
+    sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
+
+    const { result, unmount } = renderHook(() => useStorage(), { wrapper: StorageProvider });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const signal = result.current.accountSignal;
+    expect(signal?.aborted).toBe(false);
+
+    expect(() => unmount()).toThrow(failure);
+    expect(storage.stopClient).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
   });
 
   it("stops a client that finishes after the storage provider unmounts", async () => {
