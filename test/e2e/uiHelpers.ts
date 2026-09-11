@@ -151,7 +151,9 @@ export async function confirmRecoveryKeySaved(page: Page): Promise<void> {
 
 export async function restoreRecoveryKey(page: Page, key: string): Promise<void> {
   await expect(page.getByTestId("restore-expand")).toBeVisible({ timeout: 60_000 });
-  await page.getByTestId("restore-expand").click();
+  if (!(await page.getByTestId("restore-key-input").isVisible().catch(() => false))) {
+    await page.getByTestId("restore-expand").click();
+  }
   await page.getByTestId("restore-key-input").fill(key.trim());
   await page.getByTestId("restore-submit").click();
   await expect(page.getByTestId("restore-result")).toBeVisible({ timeout: 120_000 });
