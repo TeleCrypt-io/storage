@@ -53,68 +53,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source scripts/capture-diagnostics.sh
+          source scripts/release-common.sh
           sdk_tag=v0.6.1
           sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
           sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
           sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"
           record_name="$sdk_tag.integrity.json"
           archive_name="$sdk_tag.tgz"
-          capture_response() {
-            local output="$1" status replay_stdout=true
-            shift
-            if test "${1:-}" = --binary; then
-              replay_stdout=false
-              shift
-            fi
-            local error="$output.err"
-            if run_captured "$output" "$error" 120 "$@"; then
-              status=0
-            else
-              status="$?"
-            fi
-            finish_capture "$status" "$replay_stdout" "$output" "$error"
-          }
-          replay_api_failure() {
-            local body="$1" error="$2"
-            shift 2
-            if test -f "$body.err"; then
-              replay_capture "$body" "$body.err" true "$error" "$@"
-            else
-              replay_capture "$body" "$error" true "$@"
-            fi
-          }
-          api_value() {
-            local body="$1" status replay_status=0 semantic_output="$1.semantic.out"
-            shift
-            local error="$body.semantic.err"
-            if "$@" >"$semantic_output" 2>"$error"; then
-              if cat "$error" >&2; then :; else replay_status=1; fi
-              if cat "$semantic_output"; then :; else replay_status=1; fi
-              return "$replay_status"
-            else
-              status="$?"
-            fi
-            replay_api_failure "$body" "$error" "$semantic_output" || replay_status="$?"
-            return "$status"
-          }
-          require_api_json() {
-            local body="$1" transport_error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
-            shift 2
-            if "$@" >"$semantic_output" 2>"$semantic_error"; then
-              if cat "$semantic_error" >&2; then :; else replay_status=1; fi
-              if cat "$semantic_output"; then :; else replay_status=1; fi
-              return "$replay_status"
-            else
-              status="$?"
-            fi
-            if test "$transport_error" = "$body.err"; then
-              replay_api_failure "$body" "$semantic_error" "$semantic_output" || replay_status="$?"
-            else
-              replay_api_failure "$body" "$semantic_error" "$semantic_output" "$transport_error" || replay_status="$?"
-            fi
-            return "$status"
-          }
           capture_response "$sdk_release" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/TeleCrypt-io/storage-sdk/releases/tags/$sdk_tag"
           require_api_json "$sdk_release" "$sdk_release.err" jq -e --arg tag "$sdk_tag" --arg record "$record_name" --arg archive "$archive_name" '(.tag_name==$tag and .draft==false and .prerelease==false and .immutable==true and (.target_commitish|type=="string" and test("^[0-9a-f]{40}$")) and (.assets|type=="array" and length==2) and all(.assets[]; type=="object" and (.id|type=="number" and .>0) and .state=="uploaded") and any(.assets[]; type=="object" and .name==$record and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))) and any(.assets[]; type=="object" and .name==$archive and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))))' "$sdk_release"
           record_id="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
@@ -132,6 +77,9 @@ jobs:
             exit 1
           fi
           require_api_json "$sdk_record" "$sdk_record.err" node scripts/verify-storage-sdk-lock.mjs "$sdk_record" "$sdk_archive"
+
+      - name: Exercise Release publication workflow
+        run: timeout --signal=TERM --kill-after=5s 300s npm run verify:release
 
       - name: Install exact dependencies
         shell: bash

@@ -1,5 +1,5 @@
-# Shared release-workflow command capture. This file is sourced by workflow
-# steps; it deliberately imposes no output-size limit.
+# Shared release-workflow helpers. This file is sourced by workflow steps; it
+# deliberately imposes no output-size limit.
 
 capture_pid=""
 capture_stdout_path=""
@@ -116,4 +116,89 @@ require_capture() {
   local replay_status=0
   replay_capture "$stdout_path" "$stderr_path" || replay_status="$?"
   return "$status"
+}
+
+capture_response() {
+  local output="$1" replay_stdout=true status
+  shift
+  if test "${1:-}" = --binary; then
+    replay_stdout=false
+    shift
+  fi
+  local error="$output.err"
+  if run_captured "$output" "$error" 120 "$@"; then status=0; else status="$?"; fi
+  finish_capture "$status" "$replay_stdout" "$output" "$error"
+}
+
+capture_gh() {
+  local output="$1"
+  shift
+  capture_response "$output" gh "$@"
+}
+
+capture_binary() {
+  local output="$1"
+  shift
+  capture_response "$output" --binary "$@"
+}
+
+replay_api_failure() {
+  local body="$1" error="$2"
+  shift 2
+  if test -f "$body.err"; then
+    replay_capture "$body" "$body.err" true "$error" "$@"
+  else
+    replay_capture "$body" "$error" true "$@"
+  fi
+}
+
+api_value() {
+  local body="$1" status replay_status=0 semantic_output="$1.semantic.out"
+  shift
+  local error="$body.semantic.err"
+  if "$@" >"$semantic_output" 2>"$error"; then
+    if cat "$error" >&2; then :; else replay_status=1; fi
+    if cat "$semantic_output"; then :; else replay_status=1; fi
+    return "$replay_status"
+  else
+    status="$?"
+  fi
+  replay_api_failure "$body" "$error" "$semantic_output" || replay_status="$?"
+  return "$status"
+}
+
+require_api_json() {
+  local body="$1" transport_error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
+  shift 2
+  if "$@" >"$semantic_output" 2>"$semantic_error"; then
+    if cat "$semantic_error" >&2; then :; else replay_status=1; fi
+    if cat "$semantic_output"; then :; else replay_status=1; fi
+    return "$replay_status"
+  else
+    status="$?"
+  fi
+  if test "$transport_error" = "$body.err"; then
+    replay_api_failure "$body" "$semantic_error" "$semantic_output" || replay_status="$?"
+  else
+    replay_api_failure "$body" "$semantic_error" "$semantic_output" "$transport_error" || replay_status="$?"
+  fi
+  return "$status"
+}
+
+verify_source() {
+  local tag="$1" expected_sha="$2" release_commit
+  timeout --signal=TERM --kill-after=5s 60s git fetch --force --no-tags origin "refs/tags/$tag:refs/remotes/origin/release-tag"
+  test "$(git cat-file -t refs/remotes/origin/release-tag)" = tag
+  release_commit="$(git rev-parse 'refs/remotes/origin/release-tag^{commit}')"
+  test "$release_commit" = "$expected_sha"
+  test "$(git rev-parse HEAD)" = "$expected_sha"
+}
+
+verify_published_release() {
+  local json="$1" id="$2" tag="$3" target="$4" name="$5" digest="$6" size="$7"
+  require_api_json "$json" "$json.err" jq -e \
+    --arg id "$id" --arg tag "$tag" --arg target "$target" --arg name "$name" \
+    --arg digest "$digest" --argjson size "$size" \
+    'def iso: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and ((try fromdateiso8601 catch null) != null); (.id|tostring)==$id and .tag_name==$tag and .name==$tag and .body==("Release "+$tag) and .target_commitish==$target and .draft==false and .prerelease==false and .immutable==true and (.created_at|iso) and (.published_at|iso) and ((.published_at|fromdateiso8601) >= (.created_at|fromdateiso8601)) and ((.assets|type)=="array" and (.assets|length)==1) and .assets[0].name==$name and .assets[0].state=="uploaded" and .assets[0].size==$size and .assets[0].digest==$digest' \
+    "$json"
 }
