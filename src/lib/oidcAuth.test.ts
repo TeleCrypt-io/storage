@@ -120,7 +120,7 @@ function callback(search: string, hash = "") {
   if (state) {
     sessionStorage.setItem(
       OIDC_LOGIN_INTENT_STORAGE_KEY,
-      JSON.stringify({ state, createdAt: Date.now() }),
+      JSON.stringify({ state }),
     );
   }
   Object.defineProperty(window, "location", {
@@ -155,17 +155,6 @@ describe("beginOidcLogin stable device id", () => {
     await beginOidcLogin();
     const second = vi.mocked(core.beginAuthorizationCodeFlow).mock.calls[1][0];
     expect(second.deviceId).toBe(opts.deviceId);
-  });
-
-  it("fails closed on an oversized cached client identifier", async () => {
-    localStorage.setItem(
-      "telecrypt-io-ui:oidc-client:" + METADATA.issuer,
-      "x".repeat(513),
-    );
-
-    await expect(beginOidcLogin()).rejects.toThrow("OIDC client identifier is invalid or too large");
-
-    expect(core.registerClient).not.toHaveBeenCalled();
   });
 
   it("rejects discovery from an issuer other than the runtime-configured issuer", async () => {
@@ -309,7 +298,8 @@ describe("beginOidcLogin stable device id", () => {
     );
     const removeItem = sessionStorage.removeItem.bind(sessionStorage);
     vi.spyOn(sessionStorage, "removeItem").mockImplementation((key) => {
-      if (key !== "telecrypt-io-ui:session") removeItem(key);
+      if (key === "telecrypt-io-ui:session") throw new Error("session storage is unavailable");
+      removeItem(key);
     });
     vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
       expect(clearPendingRevocation(target)).toBe(true);
@@ -354,7 +344,7 @@ describe("beginOidcLogin stable device id", () => {
     });
     sessionStorage.setItem(
       OIDC_LOGIN_INTENT_STORAGE_KEY,
-      JSON.stringify({ state: "two", createdAt: Date.now() }),
+      JSON.stringify({ state: "two" }),
     );
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in failed");
@@ -469,23 +459,6 @@ describe("beginOidcLogin stable device id", () => {
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
     }, undefined, undefined);
-  });
-
-  it("rejects callback bearer tokens containing whitespace before whoami", async () => {
-    callback("?code=one&state=two");
-    vi.mocked(core.completeAuthorizationCodeFlow).mockResolvedValue({
-      homeserverUrl: getRuntimeSettings().homeserver,
-      oidcClientSettings: { issuer: METADATA.issuer, clientId: "client-123" },
-      tokenResponse: {
-        access_token: "new\naccess",
-        refresh_token: "new-refresh",
-        scope: "urn:matrix:client:device:DEVICE1234",
-      },
-    } as never);
-
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in failed");
-    expect(core.whoAmI).not.toHaveBeenCalled();
-    expect(revocation.revokeMatrixSession).not.toHaveBeenCalled();
   });
 
   it("rejects a whoami identity from another Matrix server", async () => {

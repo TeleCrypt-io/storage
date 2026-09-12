@@ -51,136 +51,51 @@ function primitiveDetail(value: unknown): string | undefined {
   return undefined;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-type PropertyRead =
-  | { ok: true; value: unknown }
-  | { ok: false; error: unknown };
-
-function readProperty(value: object, key: PropertyKey): PropertyRead {
-  try {
-    return { ok: true, value: Reflect.get(value, key) };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function propertyName(key: PropertyKey): string {
-  return sanitizeDiagnosticText(String(key));
-}
-
-function formatPropertyFailure(key: PropertyKey, error: unknown, seen: Set<object>): string {
-  return `${propertyName(key)}=[property unavailable: ${formatDiagnosticValue(error, seen)}]`;
-}
-
-function formatOwnProperties(
-  value: object,
-  seen: Set<object>,
-  excluded: ReadonlySet<PropertyKey>,
-): string[] {
-  let keys: PropertyKey[];
-  try {
-    keys = Reflect.ownKeys(value);
-  } catch (error) {
-    return [`properties=[properties unavailable: ${formatDiagnosticValue(error, seen)}]`];
-  }
-  const details: string[] = [];
-  for (const key of keys) {
-    if (excluded.has(key)) continue;
-    const read = readProperty(value, key);
-    if (!read.ok) {
-      details.push(formatPropertyFailure(key, read.error, seen));
-      continue;
-    }
-    const keyText = propertyName(key);
-    details.push(
-      `${keyText}=${SENSITIVE_KEY_PATTERN.test(keyText) ? "[REDACTED]" : formatDiagnosticValue(read.value, seen)}`,
-    );
-  }
-  return details;
-}
-
 function formatDiagnosticValue(value: unknown, seen: Set<object>): string {
   const primitive = primitiveDetail(value);
   if (primitive !== undefined) return primitive;
   if (value === null) return "null";
   if (value === undefined) return "undefined";
-  if (!isObject(value)) return sanitizeDiagnosticText(String(value));
+  if (typeof value !== "object") return sanitizeDiagnosticText(String(value));
   if (seen.has(value)) return "[circular diagnostic reference]";
   seen.add(value);
 
   try {
-    const messageRead = readProperty(value, "message");
-    const isErrorLike = value instanceof Error ||
-      (messageRead.ok && typeof messageRead.value === "string");
-    if (isErrorLike) {
-      const details: string[] = [];
-      if (!messageRead.ok) {
-        details.push(formatPropertyFailure("message", messageRead.error, seen));
-      } else if (typeof messageRead.value === "string") {
-        details.push(
-          messageRead.value === ""
-            ? "[error without a message]"
-            : sanitizeDiagnosticText(messageRead.value),
-        );
-      } else if (messageRead.value !== undefined) {
-        details.push(`message=${formatDiagnosticValue(messageRead.value, seen)}`);
-      } else {
-        details.push("[error without a message]");
+    if (value instanceof Error) {
+      const name = value.name || "Error";
+      const message = value.message;
+      const details = [
+        message === "" ? "[error without a message]" : sanitizeDiagnosticText(message),
+      ];
+      if (name !== "Error") details.push(`name=${sanitizeDiagnosticText(name)}`);
+      if (value.stack && value.stack !== `${name}: ${message}`) {
+        details.push(`stack=${sanitizeDiagnosticText(value.stack)}`);
       }
-      const name = readProperty(value, "name");
-      if (!name.ok) {
-        details.push(formatPropertyFailure("name", name.error, seen));
-      } else if (name.value !== undefined) {
-        details.push(`name=${formatDiagnosticValue(name.value, seen)}`);
-      }
-      const stack = readProperty(value, "stack");
-      if (!stack.ok) {
-        details.push(formatPropertyFailure("stack", stack.error, seen));
-      } else if (stack.value !== undefined) {
-        details.push(`stack=${formatDiagnosticValue(stack.value, seen)}`);
-      }
-      const cause = readProperty(value, "cause");
-      if (!cause.ok) {
-        details.push(formatPropertyFailure("cause", cause.error, seen));
-      } else if (cause.value !== undefined) {
-        details.push(`cause: ${formatDiagnosticValue(cause.value, seen)}`);
+      if (value.cause !== undefined) {
+        details.push(`cause: ${formatDiagnosticValue(value.cause, seen)}`);
       }
       if (value instanceof AggregateError) {
-        const errors = readProperty(value, "errors");
-        if (!errors.ok) {
-          details.push(formatPropertyFailure("errors", errors.error, seen));
-        } else if (Array.isArray(errors.value)) {
-          details.push(`errors: [${errors.value.map((error) => formatDiagnosticValue(error, seen)).join(", ")}]`);
-        } else {
-          details.push(`errors=${formatDiagnosticValue(errors.value, seen)}`);
-        }
+        details.push(`errors: [${[...value.errors].map((error) => formatDiagnosticValue(error, seen)).join(", ")}]`);
       }
-      details.push(...formatOwnProperties(value, seen, new Set(["name", "message", "stack", "cause", "errors"])));
+      for (const [key, child] of Object.entries(value)) {
+        if (["name", "message", "stack", "cause", "errors"].includes(key)) continue;
+        const safeKey = sanitizeDiagnosticText(key);
+        details.push(
+          `${safeKey}=${SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : formatDiagnosticValue(child, seen)}`,
+        );
+      }
       return details.join("; ");
     }
 
     if (Array.isArray(value)) {
-      const items = value.map((item) => formatDiagnosticValue(item, seen));
-      const properties = formatOwnProperties(
-        value,
-        seen,
-        new Set<PropertyKey>(["length", ...Array.from(value.keys(), (index) => String(index))]),
-      );
-      return properties.length === 0
-        ? `[${items.join(", ")}]`
-        : `[${items.join(", ")}; ${properties.join(", ")}]`;
+      return `[${value.map((item) => formatDiagnosticValue(item, seen)).join(", ")}]`;
     }
 
-    const properties = formatOwnProperties(value, seen, new Set<PropertyKey>());
-    if (properties.length > 0) return `{ ${properties.join(", ")} }`;
-    try {
-      return sanitizeDiagnosticText(Object.prototype.toString.call(value));
-    } catch (error) {
-      return `[object description unavailable: ${formatDiagnosticValue(error, seen)}]`;
-    }
+    const properties = Object.entries(value).map(([key, child]) => {
+      const safeKey = sanitizeDiagnosticText(key);
+      return `${safeKey}=${SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : formatDiagnosticValue(child, seen)}`;
+    });
+    return properties.length === 0 ? "[object Object]" : `{ ${properties.join(", ")} }`;
   } finally {
     seen.delete(value);
   }

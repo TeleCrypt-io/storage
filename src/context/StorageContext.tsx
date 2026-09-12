@@ -20,7 +20,6 @@ import {
   isSessionToken,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
-  MAX_SESSION_IDENTITY_BYTES,
   SESSION_PERSISTENCE_ERROR,
   type Session,
 } from "../lib/session";
@@ -48,10 +47,6 @@ const UI_SYNC_TIMEOUT_MS = 45_000;
 const UI_CONNECT_TIMEOUT_MS = 120_000;
 /** One hard ceiling for discovery, authorization-code exchange, and callback validation. */
 const UI_OIDC_TIMEOUT_MS = 120_000;
-
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
 
 interface StorageContextValue {
   status: ConnectionStatus;
@@ -225,18 +220,8 @@ export function StorageProvider({ children }: { children: ReactNode }) {
             const core = await import("../lib/core");
             const { homeserver, serverName } = getRuntimeSettings();
             const authMetadata = await core.discoverOidcIssuer(homeserver, abortController.signal);
-            if (
-              typeof authMetadata.issuer !== "string" ||
-              utf8ByteLength(authMetadata.issuer) > MAX_SESSION_IDENTITY_BYTES ||
-              authMetadata.issuer !== runtimeOidcIssuer()
-            ) {
+            if (authMetadata.issuer !== runtimeOidcIssuer()) {
               throw new Error("Authentication issuer changed; log in again");
-            }
-            if (
-              typeof authMetadata.token_endpoint !== "string" ||
-              utf8ByteLength(authMetadata.token_endpoint) > MAX_SESSION_IDENTITY_BYTES
-            ) {
-              throw new Error("OIDC token endpoint is invalid or too large");
             }
             assertRuntimeOidcEndpoint(
               authMetadata.token_endpoint,
@@ -280,7 +265,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
               if (
                 !isSessionToken(refreshToken)
               ) {
-                throw new Error("OIDC refresh token is invalid or too large");
+                throw new Error("OIDC refresh token is invalid");
               }
               if (gen !== connectGenRef.current) throw new Error("Session is no longer active");
               // `abortController` belongs to the one-time bootstrap. It is closed as soon as

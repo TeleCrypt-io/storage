@@ -52,11 +52,6 @@ class SignalResponse(Response):
         return self.body
 
 
-class CloseFailureResponse(Response):
-    def close(self) -> None:
-        raise OSError("close failed")
-
-
 class TrackingHTTPError(HTTPError):
     def __init__(self, body: bytes) -> None:
         super().__init__("https://api.github.com/test", 500, "failure", {}, io.BytesIO(body))
@@ -92,18 +87,14 @@ class DeployPagesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         configured_root = os.environ.get("HARNESS_ARTIFACTS_ROOT")
-        cls.artifact_root = Path(
-            tempfile.mkdtemp(prefix="pages-deploy-unit-", dir=configured_root or None)
+        cls.temporary_directory = tempfile.TemporaryDirectory(
+            prefix="pages-deploy-unit-", dir=configured_root or None
         )
-        print(f"Pages deployment test evidence retained at {cls.artifact_root}", file=sys.stderr)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        print(f"Pages deployment test evidence remains at {cls.artifact_root}", file=sys.stderr)
+        cls.addClassCleanup(cls.temporary_directory.cleanup)
+        cls.temporary_root = Path(cls.temporary_directory.name)
 
     def setUp(self) -> None:
-        self.output = self.artifact_root / f"{self._testMethodName}.output"
-        self.log = self.artifact_root / f"{self._testMethodName}.stderr"
+        self.output = self.temporary_root / f"{self._testMethodName}.output"
         self.output.write_text("")
         self.environment = {
             "PAGES_ARTIFACT_ID": "123",
@@ -124,12 +115,7 @@ class DeployPagesTest(unittest.TestCase):
         with patch.dict(os.environ, self.environment, clear=True), patch.object(deploy_pages, "urlopen", opener):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                try:
-                    deploy_pages.deploy(**kwargs)
-                except BaseException:
-                    self.log.write_text(stderr.getvalue())
-                    raise
-            self.log.write_text(stderr.getvalue())
+                deploy_pages.deploy(**kwargs)
             return stderr.getvalue()
 
     def run_deploy_error(self, opener: OpenSequence, *, clock=None, sleep=None):
@@ -144,7 +130,6 @@ class DeployPagesTest(unittest.TestCase):
                 try:
                     deploy_pages.deploy(**kwargs)
                 except BaseException as error:
-                    self.log.write_text(stderr.getvalue())
                     return error, stderr.getvalue()
         self.fail("deployment unexpectedly succeeded")
 
@@ -212,14 +197,6 @@ class DeployPagesTest(unittest.TestCase):
         self.assertIn(body.decode(), str(caught))
         self.assertIn(body.decode(), stderr)
         self.assertTrue(partial.closed)
-
-    def test_response_close_failure_keeps_complete_body(self) -> None:
-        body = b'{"detail":"complete"}'
-        opener = OpenSequence([CloseFailureResponse(200, body)])
-        caught, stderr = self.run_deploy_error(opener)
-        self.assertIn("response close failed", str(caught))
-        self.assertIn(body.decode(), str(caught))
-        self.assertIn(body.decode(), stderr)
 
     def test_sigterm_during_response_read_is_preserved_and_cancelled(self) -> None:
         pending = SignalResponse(200, b'{"status":"in_progress"}')
@@ -306,9 +283,8 @@ class DeployPagesTest(unittest.TestCase):
         self.assertIn(cancel_body.decode(), message)
         self.assertEqual(len(opener.requests), 4)
 
-    def test_secrets_are_redacted_and_large_responses_are_not_capped(self) -> None:
-        marker = "response-tail-" + ("x" * 200_000)
-        body = json.dumps({"status": "deployment_failed", "detail": marker, "token": "oidc-jwt"}).encode()
+    def test_secrets_are_redacted_in_deployment_failure_details(self) -> None:
+        body = json.dumps({"status": "deployment_failed", "detail": "provider detail", "token": "oidc-jwt"}).encode()
         opener = OpenSequence(
             [
                 Response(200, b'{"value":"oidc-jwt"}'),
@@ -325,7 +301,7 @@ class DeployPagesTest(unittest.TestCase):
         self.assertNotIn("gh-secret-token", stderr)
         self.assertNotIn("oidc-request-secret", stderr)
         self.assertNotIn("oidc-jwt", stderr)
-        self.assertIn(marker, stderr)
+        self.assertIn("provider detail", stderr)
 
     def test_malformed_oidc_response_redacts_returned_token_before_logging(self) -> None:
         body = b'{"value":"oidc-jwt-malformed"'

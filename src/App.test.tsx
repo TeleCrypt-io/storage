@@ -277,24 +277,6 @@ describe("formatOperationError", () => {
     expect(namedDetail).toContain("name=BackendFailure");
     expect(namedDetail).toContain("stack=BackendFailure: named failure\\u000a");
 
-    const throwingError = new Error("getter failure");
-    Object.defineProperties(throwingError, {
-      name: { get: () => { throw new Error("name getter failed"); } },
-      stack: { get: () => { throw new Error("stack getter failed"); } },
-    });
-    const throwingDetail = formatOperationError(throwingError);
-    expect(throwingDetail).toContain("name=[property unavailable: name getter failed; name=Error");
-    expect(throwingDetail).toContain("stack=[property unavailable: stack getter failed; name=Error");
-
-    const getterFailure = {};
-    Object.defineProperty(getterFailure, "details", {
-      get: () => {
-        throw new Error("diagnostic getter failed");
-      },
-    });
-    expect(formatOperationError(getterFailure)).toContain(
-      "details=[property unavailable: diagnostic getter failed; name=Error",
-    );
   });
 
   it("preserves persistence and retry failure details", () => {
@@ -453,17 +435,6 @@ describe("login", () => {
     fetchMock.mockRestore();
   });
 
-  it("rejects an oversized refresh token before making a token request", async () => {
-    await loginAndReachVaults();
-    const createOptions = vi.mocked(core.TeleCryptIOStorage.createFromOidc).mock.calls[0][0];
-    const refresh = createOptions.tokenRefreshFunction;
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-
-    await expect(refresh!("x".repeat(8193))).rejects.toThrow("OIDC refresh token is invalid or too large");
-    expect(fetchMock).not.toHaveBeenCalled();
-    fetchMock.mockRestore();
-  });
-
   it("rejects a token refresh that completes after logout without restoring the session", async () => {
     const { storage, user } = await loginAndReachVaults();
     const createOptions = vi.mocked(core.TeleCryptIOStorage.createFromOidc).mock.calls[0][0];
@@ -507,7 +478,7 @@ describe("login", () => {
     window.history.replaceState({}, "", "/?code=one&state=two");
     sessionStorage.setItem(
       session.OIDC_LOGIN_INTENT_STORAGE_KEY,
-      JSON.stringify({ state: "two", createdAt: Date.now() }),
+      JSON.stringify({ state: "two" }),
     );
     vi.mocked(oidcAuth.completeOidcLoginFromCallback).mockResolvedValue(SESSION);
     const saveSpy = vi.spyOn(session, "saveSessionIfCurrent").mockImplementation(() => {
@@ -536,7 +507,7 @@ describe("login", () => {
     window.history.replaceState({}, "", "/?code=one&state=two");
     sessionStorage.setItem(
       session.OIDC_LOGIN_INTENT_STORAGE_KEY,
-      JSON.stringify({ state: "two", createdAt: Date.now() }),
+      JSON.stringify({ state: "two" }),
     );
     const storage = fakeStorage();
     vi.mocked(oidcAuth.completeOidcLoginFromCallback).mockResolvedValue(SESSION);

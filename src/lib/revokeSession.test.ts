@@ -202,15 +202,6 @@ describe("revokeMatrixSession", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized token before sending an authorization header", async () => {
-    const fetchMock = vi.fn<typeof fetch>();
-
-    await expect(
-      revokeMatrixSession({ ...target, accessToken: "x".repeat(8193) }, fetchMock),
-    ).rejects.toMatchObject({ reason: "failed" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it.each(["token\nwith-control", "token with-space", "token\u007fwith-delete"])(
     "rejects a token containing whitespace/control characters (%s)",
     async (accessToken) => {

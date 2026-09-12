@@ -14,17 +14,13 @@ import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import {
   FILE_TOO_LARGE_ERROR,
-  isBytesWithinLimit,
   isFileWithinLimit,
-  isSafeFileName,
-  isSafeRelativePath,
-  readFileWithinLimit,
+  readFileBytes,
 } from "../lib/fileLimits";
 import type { Selection } from "./DetailsPanel";
 
 const POLL_MS = 2500;
 const UNTITLED_SUBFOLDER = "Untitled folder";
-const INVALID_UPLOAD_ERROR = "The upload selection contains an invalid name or path";
 
 type MutationIdentity = {
   storage: TeleCryptIOStorage;
@@ -36,19 +32,11 @@ type MutationIdentity = {
 
 function validateUploadSelection(files: File[], preservePaths: boolean): string[] {
   if (files.some((file) => !isFileWithinLimit(file))) throw new Error(FILE_TOO_LARGE_ERROR);
-  const paths = files.map((file) =>
+  return files.map((file) =>
     preservePaths
       ? (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
       : file.name,
   );
-  if (
-    paths.some((path) =>
-      preservePaths ? !isSafeRelativePath(path) : !isSafeFileName(path),
-    )
-  ) {
-    throw new Error(INVALID_UPLOAD_ERROR);
-  }
-  return paths;
 }
 
 function uniqueUntitledSubfolderName(existing: FolderInfo[]): string {
@@ -293,10 +281,6 @@ export function VaultContents({
     mimetype: string,
   ) {
     if (!isCurrentMutation(operation)) return false;
-    if (!isBytesWithinLimit(bytes)) {
-      setError(formatOperationError(new Error(FILE_TOO_LARGE_ERROR)));
-      return false;
-    }
     setBusy(true);
     setError(null);
     try {
@@ -330,7 +314,7 @@ export function VaultContents({
     setError(null);
     try {
       for (const file of selectedFiles) {
-        const bytes = await readFileWithinLimit(file);
+        const bytes = await readFileBytes(file);
         const mimetype = file.type || "application/octet-stream";
         if (!(await uploadBytes(operation, operation.treeId, file.name, bytes, mimetype))) return;
       }
@@ -365,7 +349,7 @@ export function VaultContents({
       for (const [index, file] of selectedFiles.entries()) {
         if (!isCurrentMutation(operation)) return;
         const rel = relativePaths[index]!;
-        const bytes = await readFileWithinLimit(file);
+        const bytes = await readFileBytes(file);
         if (!isCurrentMutation(operation)) return;
         const targetId = await ensurePath(
           operation.storage,
@@ -419,7 +403,7 @@ export function VaultContents({
     setError(null);
     try {
       for (const file of selectedFiles) {
-        const bytes = await readFileWithinLimit(file);
+        const bytes = await readFileBytes(file);
         if (!(await uploadBytes(operation, operation.treeId, file.name, bytes, file.type || "application/octet-stream"))) {
           return;
         }

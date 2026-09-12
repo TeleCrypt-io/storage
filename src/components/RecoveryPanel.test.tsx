@@ -296,22 +296,4 @@ describe("RecoveryPanel identity", () => {
     view.unmount();
   });
 
-  it("passes restore-key validation to the SDK", async () => {
-    const storage = fakeStorage(configuredStatus);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("restore-expand"));
-    fireEvent.change(screen.getByTestId("restore-key-input"), {
-      target: { value: "x".repeat(4097) },
-    });
-    await user.click(screen.getByTestId("restore-submit"));
-
-    expect(storage.keys.restoreFromRecoveryKey).toHaveBeenCalledWith(
-      "x".repeat(4097),
-      expect.anything(),
-    );
-    expect(await screen.findByTestId("restore-result")).toHaveTextContent("Imported 1 of 1 keys.");
-  });
 });

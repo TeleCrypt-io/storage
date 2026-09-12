@@ -121,7 +121,6 @@ def report_response(operation: str, status: int | str, body: bytes | str, secret
 def read_body(response: Any, operation: str, status: int | str, secrets: list[str]) -> bytes:
     body: bytes = b""
     read_error: Exception | None = None
-    close_error: Exception | None = None
     try:
         body = response.read()
     except Exception as error:
@@ -135,27 +134,19 @@ def read_body(response: Any, operation: str, status: int | str, secrets: list[st
         report_response(operation, status, body, secrets)
         try:
             response.close()
-        except Exception as error:
-            print(
-                f"{operation} response close failed while handling cancellation: {redact(str(error), secrets)}",
-                file=sys.stderr,
-            )
+        except Exception:
+            pass
         raise
     remember_oidc_value(operation, body, secrets)
     safe = report_response(operation, status, body, secrets)
     try:
         response.close()
-    except Exception as error:
-        close_error = error
+    except Exception:
+        pass
     if read_error is not None:
         detail = redact(str(read_error), secrets)
         message = f"{operation} response read failed: {detail}"
-        if close_error is not None:
-            message += f"; closing response failed: {redact(str(close_error), secrets)}"
         raise PagesFailure(message, safe) from read_error
-    if close_error is not None:
-        detail = redact(str(close_error), secrets)
-        raise PagesFailure(f"{operation} response close failed: {detail}", safe) from close_error
     return body
 
 

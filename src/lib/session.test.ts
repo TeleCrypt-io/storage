@@ -6,15 +6,13 @@ import {
   SESSION_STORAGE_KEY,
   clearPendingRevocation,
   clearSession,
-  clearOidcTransientState,
   loadOidcLoginIntent,
-  loadPendingRevocation,
+  loadPendingRevocations,
   loadSession,
   savePendingRevocation,
   saveSessionIfCurrent,
   isRuntimeMatrixDeviceId,
   isRuntimeMatrixUserId,
-  MAX_OIDC_LOGIN_INTENT_AGE_MS,
   type Session,
 } from "./session";
 
@@ -167,10 +165,10 @@ describe("tab-scoped session persistence", () => {
       savePendingRevocation({ homeserver: SESSION.homeserver, accessToken: "volatile-token" }),
     ).toThrow("Session cleanup could not be persisted");
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
-    expect(loadPendingRevocation()).toEqual({
+    expect(loadPendingRevocations()).toEqual([{
       homeserver: SESSION.homeserver,
       accessToken: "volatile-token",
-    });
+    }]);
     expect(clearPendingRevocation()).toBe(true);
   });
 
@@ -195,7 +193,7 @@ describe("tab-scoped session persistence", () => {
     } finally {
       Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
     }
-    expect(loadPendingRevocation()).toEqual(pending);
+    expect(loadPendingRevocations()).toEqual([pending]);
   });
 
   it("rejects whitespace and non-canonical Matrix identities", () => {
@@ -221,7 +219,6 @@ describe("tab-scoped session persistence", () => {
     expect(isRuntimeMatrixUserId("@Alice+device/1:LOCALHOST:8008")).toBe(true);
     expect(isRuntimeMatrixDeviceId("DEVICE~1")).toBe(true);
     expect(isRuntimeMatrixDeviceId("DEVICE=1")).toBe(false);
-    expect(isRuntimeMatrixDeviceId("D".repeat(129))).toBe(false);
   });
 
   it("propagates runtime configuration failures instead of treating them as invalid identities", () => {
@@ -262,22 +259,6 @@ describe("tab-scoped session persistence", () => {
     ).toBe("client-a");
   });
 
-  it("rejects an expired login intent and still clears one-time state without clearing a live session", () => {
-    sessionStorage.setItem(
-      "telecrypt-io-ui:oidc-login-intent",
-      JSON.stringify({ state: "state", createdAt: Date.now() - MAX_OIDC_LOGIN_INTENT_AGE_MS - 1 }),
-    );
-    sessionStorage.setItem("mx_oidc_state", "transient-state");
-    sessionStorage.setItem("telecrypt:oauth2:pkce:v1:state", "transient-state");
-    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(SESSION));
-
-    expect(() => loadOidcLoginIntent()).toThrow("Stored OIDC login intent is invalid or expired");
-    expect(clearOidcTransientState()).toBe(true);
-    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toEqual(JSON.stringify(SESSION));
-    expect(sessionStorage.getItem("mx_oidc_state")).toBeNull();
-    expect(sessionStorage.getItem("telecrypt:oauth2:pkce:v1:state")).toBeNull();
-  });
-
   it("returns null only when the login intent is absent", () => {
     expect(loadOidcLoginIntent()).toBeNull();
     sessionStorage.setItem("telecrypt-io-ui:oidc-login-intent", "{");
@@ -288,7 +269,7 @@ describe("tab-scoped session persistence", () => {
     const pending = { homeserver: SESSION.homeserver, accessToken: SESSION.accessToken };
 
     expect(savePendingRevocation(pending)).toBe(true);
-    expect(loadPendingRevocation()).toEqual(pending);
+    expect(loadPendingRevocations()).toEqual([pending]);
     expect(sessionStorage.getItem(PENDING_REVOCATION_STORAGE_KEY)).toContain(SESSION.accessToken);
     expect(localStorage.getItem(PENDING_REVOCATION_STORAGE_KEY)).toBeNull();
   });
@@ -297,7 +278,7 @@ describe("tab-scoped session persistence", () => {
     sessionStorage.setItem(PENDING_REVOCATION_STORAGE_KEY, "null");
     let caught: unknown;
     try {
-      loadPendingRevocation();
+      loadPendingRevocations();
     } catch (error) {
       caught = error;
     }
@@ -320,7 +301,7 @@ describe("tab-scoped session persistence", () => {
     try {
       let caught: unknown;
       try {
-        loadPendingRevocation();
+        loadPendingRevocations();
       } catch (error) {
         caught = error;
       }

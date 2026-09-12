@@ -3,9 +3,8 @@
 The static React/Vite site served at [storage.telecrypt.io](https://storage.telecrypt.io).
 Current TeleCrypt project facts and product decisions are maintained only in the canonical
 [`llms.txt`](https://telecrypt.io/llms.txt); this README documents this website implementation.
-It consumes the exact published `@telecrypt-io/storage@0.6.1` browser library. The package lock
-binds that dependency to the published tarball's integrity and the release workflows verify the
-immutable SDK release record and package bytes before dependency installation.
+It consumes the browser SDK version pinned in `package.json` and `package-lock.json`, installed
+with `npm ci`.
 Storage protocol, cryptography, and the command-line client deliberately live in their own
 repositories.
 
@@ -38,37 +37,20 @@ Operation failures retain complete error, response, and nested-cause details for
 credential redaction and control-character escaping; diagnostic output is not capped or replaced
 with a generic message because it is large or unfamiliar.
 
-The exact-tag workflow creates and verifies one exact published, non-prerelease immutable GitHub
-Release. Before starting the workflow, verify that the active repository ruleset protects the
-`storage-web-v*` tags from moving or deletion. The workflow builds and tests the site, creates or
-resumes one exact draft Release, verifies its metadata and bytes, publishes it, then verifies the
-public download. Production deployment requires a separate owner-authorized workflow dispatch at
-the exact published tag; that dispatch rechecks the immutable Release and deploys its exact archive
-bytes to GitHub Pages. A rerun may reproduce the local package for comparison, but it never replaces
-a published asset. Any source or metadata change fails closed and requires a new version.
-
 The Cloudflare Pages Git integration builds only the `stage` branch. That branch is advanced only to
 a commit that has already passed the repository checks and is identified by a published immutable
 `storage-web-v*` release; the Cloudflare deployment record must resolve to that same commit. A branch
 name alone is never sufficient deployment evidence. Cloudflare Pages stage must emit exactly one response
 `Content-Security-Policy` header containing the full site policy plus `frame-ancestors 'none'`, and
-exactly one `X-Frame-Options: DENY` header on every response. The checked-in `public/_headers` file
-records that contract; GitHub Pages production cannot emit response headers and continues to use
-the HTML meta policy as its browser baseline.
-
-GitHub Pages release publication is separate from authenticated acceptance. The response-header
-requirement is a stage-only acceptance check on the header-capable Cloudflare Pages target:
-`storage.stage.telecrypt.io` must add `Content-Security-Policy: frame-ancestors 'none'` and
-`X-Frame-Options: DENY`. GitHub Pages production is the documented hosting exception because it
-cannot emit response headers; its HTML meta policy remains the browser baseline.
+exactly one `X-Frame-Options: DENY` header on every response. This is a stage acceptance requirement;
+GitHub Pages production cannot emit response headers and uses the HTML meta policy as its browser
+baseline. The checked-in `public/_headers` file records the stage contract.
 
 ## Shared UI vendor baseline
 
-`src/vendor/telecrypt-ui/product.css` is an exact local vendor copy of the
-canonical shared UI stylesheet. `src/theme.css` imports it directly, keeping
-this repository self-contained without a runtime package dependency. The
-vendor `PROVENANCE.json` records only the exact `TeleCrypt-io/ui-shared-css` source, release,
-commit, source path, and content hash.
+`src/vendor/telecrypt-ui/product.css` is copied from the
+[TeleCrypt shared UI](https://github.com/TeleCrypt-io/ui-shared-css).
+`src/theme.css` imports it directly, so the website has no runtime stylesheet package dependency.
 
 ## Development and checks
 
@@ -77,11 +59,7 @@ npm ci --ignore-scripts --no-fund --no-audit
 npm run dev       # http://localhost:5173
 npm run lint
 npm test          # component/wiring tests; no browser Harness execution in CI
-npm run typecheck
-npm run verify:security
-npm run verify:archive
 npm run build
-npm run verify:package
 ```
 
 Browser acceptance tooling is operator-local Harness work, never a GitHub Actions job. Its real
@@ -97,17 +75,14 @@ for the canonical ordering and stopping boundary.
 
 ## Releases and deployment
 
-Pushes and pull requests to `main` only verify the source. A protected annotated
-`storage-web-v<major>.<minor>.<patch>` tag runs the exact-version release workflow; it checks the
-tag/source/main/package identity, installs dependencies, runs tests/lint/typecheck/build, and
-creates the single immutable Release archive. An owner-authorized production promotion dispatches
-the same workflow at that exact tag; GitHub Pages deployment occurs only after the published Release
-is rechecked and its archive bytes match the Release API digest. Cloudflare Pages stage builds the
-same released commit from `stage`, with previews disabled; its deployment record is accepted only
-when its source commit matches the immutable Release. The source is environment-neutral, and the
-browser derives its backend from the canonical site hostname. VM activation, promotion, and
-authenticated acceptance follow the operator-managed Harness deployment contract; this repository
-does not publish or duplicate those private operational steps.
+Pushes and pull requests to `main` only verify the source. An annotated
+`storage-web-v<major>.<minor>.<patch>` tag runs the release workflow; it checks the tag commit and
+package version, installs dependencies, runs tests and lint, builds the site, and publishes one immutable
+Release archive. An owner-authorized production promotion dispatches the workflow at that exact tag,
+rebuilds the tagged source, verifies the published archive's GitHub digest and size, and deploys those
+archive bytes. The workflow does not edit an existing Release. The source is environment-neutral, and
+the browser derives its backend from the canonical site hostname. VM activation and acceptance follow
+the operator-managed Harness deployment contract.
 
 ## License
 

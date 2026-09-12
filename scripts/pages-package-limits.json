@@ -1,7 +1,0 @@
-{
-  "max_archive_bytes": 16777216,
-  "max_member_count": 512,
-  "max_member_path_bytes": 4096,
-  "max_member_uncompressed_bytes": 12582912,
-  "max_total_uncompressed_bytes": 25165824
-}

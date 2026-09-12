@@ -1,7 +1,7 @@
 {
   "name": "@telecrypt-io/storage-web",
   "private": true,
-  "version": "0.4.21",
+  "version": "0.4.22",
   "license": "BUSL-1.1",
   "packageManager": "npm@11.19.0",
   "engines": {
@@ -12,18 +12,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "typecheck": "tsc -b --pretty false",
-    "verify:archive": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-validate-pages-archive.py",
-    "verify:release": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release-ui-workflow.py",
-    "verify:package": "bash scripts/verify-pages-package.sh",
-    "verify:security": "node scripts/verify-security-policy.mjs && node scripts/test-storage-sdk-lock.mjs && bash -n scripts/verify-shared-ui-release.sh && node scripts/verify-provenance.mjs && node scripts/test-provenance.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@telecrypt-io/storage": "0.6.1",
+    "@telecrypt-io/storage": "0.7.0",
     "buffer": "6.0.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"

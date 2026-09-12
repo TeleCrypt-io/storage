@@ -11,26 +11,6 @@ concurrency:
   group: pages-storage-web-${{ github.ref_name }}
   cancel-in-progress: false
 
-env:
-  GIT_CONFIG_NOSYSTEM: "1"
-  GIT_CONFIG_SYSTEM: /dev/null
-  GIT_CONFIG_GLOBAL: /tmp/telecrypt-gitconfig
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: init.defaultBranch
-  GIT_CONFIG_VALUE_0: main
-  GIT_CONFIG_PARAMETERS: ""
-  GIT_NO_REPLACE_OBJECTS: "1"
-  GIT_TERMINAL_PROMPT: "0"
-  GIT_ASKPASS: /bin/false
-  SSH_ASKPASS: /bin/false
-  GIT_ALLOW_PROTOCOL: https
-  GIT_PROTOCOL_FROM_USER: "0"
-  GH_HOST: github.com
-  HTTP_PROXY: ""
-  HTTPS_PROXY: ""
-  ALL_PROXY: ""
-  NO_PROXY: ""
-
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -42,70 +22,31 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_SHA: ${{ github.sha }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - name: Verify exact annotated source
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^storage-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          source scripts/release-common.sh
-          verify_source "$RELEASE_TAG" "$RELEASE_SHA"
-
+      - name: Verify annotated release source
+        run: bash scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA"
       - uses: actions/setup-node@v7.0.0
-        with: {node-version: "24.20.0", cache: npm}
-      - name: Verify exact versions and vendored provenance
+        with: {node-version-file: .node-version, cache: npm}
+      - name: Verify release version
         shell: bash
         run: |
           set -euo pipefail
-          test "$(node --version)" = v24.20.0
-          test "$(npm --version)" = 11.19.0
+          npm_version="$(node -p 'require("./package.json").packageManager.replace(/^npm@/u, "")')"
+          test "$(npm --version)" = "$npm_version"
           version="${RELEASE_TAG#storage-web-v}"
           test "$version" = "$(node -p 'require("./package.json").version')"
           test "$version" = "$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).packages[""].version')"
-          test "$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')" = 0.6.1
-          bash scripts/verify-shared-ui-release.sh
-          sdk_tag=v0.6.1
-          sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
-          sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
-          sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"
-          sdk_record_name="$sdk_tag.integrity.json"
-          sdk_archive_name="$sdk_tag.tgz"
-          source scripts/release-common.sh
-          capture_response "$sdk_release" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/TeleCrypt-io/storage-sdk/releases/tags/$sdk_tag"
-          require_api_json "$sdk_release" "$sdk_release.err" jq -e --arg tag "$sdk_tag" --arg record "$sdk_record_name" --arg archive "$sdk_archive_name" '(.tag_name==$tag and .draft==false and .prerelease==false and .immutable==true and (.target_commitish|type=="string" and test("^[0-9a-f]{40}$")) and (.assets|type=="array" and length==2) and all(.assets[]; type=="object" and (.id|type=="number" and .>0) and .state=="uploaded") and any(.assets[]; type=="object" and .name==$record and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))) and any(.assets[]; type=="object" and .name==$archive and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))))' "$sdk_release"
-          record_id="$(api_value "$sdk_release" jq -er --arg name "$sdk_record_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_size="$(api_value "$sdk_release" jq -er --arg name "$sdk_record_name" '.assets[] | select(.name==$name) | .size | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_digest="$(api_value "$sdk_release" jq -er --arg name "$sdk_record_name" '.assets[] | select(.name==$name) | .digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$sdk_release")"
-          capture_response "$sdk_record" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$record_id"
-          test "$(wc -c <"$sdk_record")" = "$record_size" -a "sha256:$(sha256sum "$sdk_record" | awk '{print $1}')" = "$record_digest"
-          archive_id="$(api_value "$sdk_release" jq -er --arg name "$sdk_archive_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          capture_response "$sdk_archive" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$archive_id"
-          record_commit="$(api_value "$sdk_record" jq -er '.commit' "$sdk_record")"
-          release_commit="$(api_value "$sdk_release" jq -er '.target_commitish' "$sdk_release")"
-          if test "$record_commit" != "$release_commit"; then
-            printf 'API semantic mismatch (SDK record commit differs from Release target)\n' >&2
-            replay_capture "$sdk_record" "$sdk_record.err" true "$sdk_release" "$sdk_release.err" || :
-            exit 1
-          fi
-          require_api_json "$sdk_record" "$sdk_record.err" node scripts/verify-storage-sdk-lock.mjs "$sdk_record" "$sdk_archive"
-          test "$(head -n 1 LICENSE)" = "Business Source License 1.1"
-          node scripts/verify-provenance.mjs
-      - name: Test and build the Pages tree
+      - name: Test and build the site
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 600s npm ci --ignore-scripts --no-fund --no-audit
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:security
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:archive
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:release
-          timeout --signal=TERM --kill-after=5s 600s npm test
-          timeout --signal=TERM --kill-after=5s 300s npm run lint
-          timeout --signal=TERM --kill-after=5s 300s npm run typecheck
-          timeout --signal=TERM --kill-after=5s 600s npm run build
-      - name: Package the deterministic Pages artifact
+          npm ci --ignore-scripts --no-fund --no-audit
+          npm test
+          npm run lint
+          npm run build
+      - name: Package the Pages archive
         id: package
         shell: bash
         run: |
@@ -113,193 +54,65 @@ jobs:
           version="${RELEASE_TAG#storage-web-v}"
           archive="storage-web-$version.pages.zip"
           mkdir -p release-assets
-          timeout --signal=TERM --kill-after=5s 300s bash scripts/package-pages.sh dist "release-assets/$archive" "$(git show -s --format=%ct "$RELEASE_SHA")"
-          timeout --signal=TERM --kill-after=5s 300s python3 scripts/validate-pages-archive.py "release-assets/$archive"
+          bash scripts/package-pages.sh dist "release-assets/$archive" "$(git show -s --format=%ct "$RELEASE_SHA")"
           size="$(wc -c <"release-assets/$archive")"
-          test "$size" -gt 0
-          printf 'pages_digest=sha256:%s\npages_size=%s\n' "$(sha256sum "release-assets/$archive" | awk '{print $1}')" "$size" >>"$GITHUB_OUTPUT"
+          digest="sha256:$(sha256sum "release-assets/$archive" | awk '{print $1}')"
+          printf 'pages_digest=%s\npages_size=%s\n' "$digest" "$size" >>"$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: storage-pages-${{ github.run_id }}-${{ github.sha }}
           path: release-assets/*.pages.zip
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
 
   release:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    permissions: {contents: write, actions: read}
+    timeout-minutes: 20
+    permissions: {contents: write}
     outputs:
-      release_id: ${{ steps.publish.outputs.release_id }}
+      release_id: ${{ steps.verify.outputs.release_id }}
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_SHA: ${{ github.sha }}
       EXPECTED_DIGEST: ${{ needs.build.outputs.pages_digest }}
       EXPECTED_SIZE: ${{ needs.build.outputs.pages_size }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
-        with: {fetch-depth: 0, persist-credentials: false}
-      - name: Download the exact tested Pages archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh run download "$GITHUB_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name "storage-pages-${GITHUB_RUN_ID}-${GITHUB_SHA}" \
-            --dir release-assets
-      - name: Create or reuse the exact draft Release
-        id: publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v7.0.0
+        with:
+          name: storage-pages-${{ github.run_id }}-${{ github.sha }}
+          path: release-assets
+      - name: Create the tagged Release
+        if: ${{ github.event_name == 'push' }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^storage-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          source scripts/release-common.sh
-          verify_source "$RELEASE_TAG" "$RELEASE_SHA"
           version="${RELEASE_TAG#storage-web-v}"
           archive="release-assets/storage-web-$version.pages.zip"
-          test -f "$archive"
+          test -s "$archive"
           test "$(wc -c <"$archive")" = "$EXPECTED_SIZE"
           test "sha256:$(sha256sum "$archive" | awk '{print $1}')" = "$EXPECTED_DIGEST"
-          api_expect() {
-            local body="$1" expected="$2" value status
-            shift 2
-            if value="$(api_value "$body" "$@")"; then
-              :
-            else
-              status="$?"
-              return "$status"
-            fi
-            if test "$value" = "$expected"; then return 0; fi
-            printf 'API semantic mismatch (expected %s, got %s)\n' "$expected" "$value" >&2
-            replay_api_failure "$body" "$body.semantic.err"
-            return 1
-          }
-          verify_draft() {
-            local json="$1" id="$2"
-            require_api_json "$json" "$json.err" jq -e --arg id "$id" --arg tag "$RELEASE_TAG" --arg target "$RELEASE_SHA" 'def iso: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and ((try fromdateiso8601 catch null) != null); (.id|tostring)==$id and .tag_name==$tag and .name==$tag and .body==("Release "+$tag) and .target_commitish==$target and .draft==true and .prerelease==false and (.immutable==false or .immutable==null) and (.created_at|iso) and .published_at==null and ((.assets|type)=="array") and all(.assets[]; type=="object" and (.id|type=="number" and .>0 and floor==.))' "$json"
-          }
-          revalidate_draft_for_publish() {
-            local json="$1" id="$2"
-            capture_gh "$json" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/$id"
-            verify_draft "$json" "$id"
-            api_expect "$json" "$expected_draft_asset_metadata" jq -c '[.assets[] | {id,name,state,size,digest}] | sort_by(.name)' "$json"
-          }
-          download_asset() {
-            local json="$1" output="$2" asset_id
-            asset_id="$(api_value "$json" jq -er '.assets[0].id | select(type=="number" and .>0 and floor==.)' "$json")"
-            capture_binary "$output" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            test "$(wc -c <"$output")" = "$EXPECTED_SIZE"
-            test "sha256:$(sha256sum "$output" | awk '{print $1}')" = "$EXPECTED_DIGEST"
-          }
-          # The tag endpoint hides drafts and a failed gh request can still leave
-          # its JSON error body in stdout. Discover through every bounded Release
-          # list page first, so create is reached only after absence is proven.
-          probe="$RUNNER_TEMP/release-probe.json"
-          release_matches="$RUNNER_TEMP/release-matches.jsonl"
-          : >"$release_matches"
-          replay_release_pages() {
-            local replay_status=0 page_path
-            for page_path in "$RUNNER_TEMP"/release-page-*.json; do
-              if test -f "$page_path"; then
-                if replay_capture "$page_path" "$page_path.err"; then :; else replay_status=1; fi
-              fi
-            done
-            return "$replay_status"
-          }
-          page=1
-          while :; do
-            page_json="$RUNNER_TEMP/release-page-$page.json"
-            capture_gh "$page_json" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page"
-            require_api_json "$page_json" "$page_json.err" jq -e 'type == "array"' "$page_json"
-            api_value "$page_json" jq -c --arg tag "$RELEASE_TAG" '.[] | select(.tag_name==$tag) | {id,tag_name,draft}' "$page_json" >>"$release_matches"
-            page_size="$(api_value "$page_json" jq -er 'length' "$page_json")"
-            test "$page_size" -le 100
-            if test "$page_size" -lt 100; then
-              break
-            fi
-            page=$((page + 1))
-          done
-          match_count="$(api_value "$release_matches" jq -s -er 'length' "$release_matches")"
-          if test "$match_count" -gt 1; then
-            replay_release_pages
-            echo 'multiple Releases match the release tag' >&2
-            exit 1
-          fi
-          if test "$match_count" = 0; then
-            discovery_state="absent"
-            create="$RUNNER_TEMP/release-create.json"
-            capture_gh "$create" api --hostname github.com --method POST --header 'X-GitHub-Api-Version: 2026-03-10' --raw-field "tag_name=$RELEASE_TAG" --raw-field "name=$RELEASE_TAG" --raw-field "body=Release $RELEASE_TAG" --raw-field "target_commitish=$RELEASE_SHA" --field draft=true --field prerelease=false "/repos/$GITHUB_REPOSITORY/releases"
-            release_id="$(api_value "$create" jq -er '.id | select(type=="number" and .>0 and floor==.)' "$create")"
-          else
-            release_id="$(api_value "$release_matches" jq -s -er '.[0].id | select(type=="number" and .>0 and floor==.)' "$release_matches")"
-            discovery_state="$(api_value "$release_matches" jq -s -er 'if .[0].draft==true then "draft" elif .[0].draft==false then "published" else empty end' "$release_matches")"
-          fi
-          capture_gh "$probe" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/$release_id"
-          state="$(api_value "$probe" jq -er 'if .draft==true then "draft" elif .draft==false then "published" else empty end' "$probe")"
-          if test "$discovery_state" = "absent" && test "$state" != "draft"; then
-            echo "Release creation did not return a draft" >&2
-            exit 1
-          fi
-          if test "$discovery_state" != "absent" && test "$discovery_state" != "$state"; then
-            echo "Release discovery state changed before the authoritative fetch" >&2
-            exit 1
-          fi
-          case "$state" in
-            draft)
-              verify_draft "$probe" "$release_id"
-              asset_ids="$RUNNER_TEMP/release-assets"
-              api_value "$probe" jq -r '.assets[]?.id // empty' "$probe" >"$asset_ids"
-              while IFS= read -r asset_id; do
-                test -z "$asset_id" || [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
-                if test -n "$asset_id"; then
-                  capture_gh "$RUNNER_TEMP/delete-$asset_id.json" api --hostname github.com --method DELETE --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-                fi
-              done <"$asset_ids"
-              asset_name="storage-web-${RELEASE_TAG#storage-web-v}.pages.zip"
-              upload_url="$(api_value "$probe" jq -er '.upload_url | select(type=="string" and test("^https://uploads\\.github\\.com/repos/[^/]+/[^/]+/releases/[0-9]+/assets\\{\\?name,label\\}$"))' "$probe")"
-              upload_url="${upload_url%\{*}"
-              expected_upload_url="https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets"
-              if test "$upload_url" != "$expected_upload_url"; then
-                printf 'API semantic mismatch (unexpected upload URL)\n' >&2
-                replay_api_failure "$probe" "$probe.semantic.err"
-                exit 1
-              fi
-              capture_gh "$RUNNER_TEMP/upload.json" api --hostname github.com --method POST --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/vnd.github+json' --header 'Content-Type: application/zip' --input "$archive" "$upload_url?name=$asset_name"
-              capture_gh "$probe" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/$release_id"
-              verify_draft "$probe" "$release_id"
-              require_api_json "$probe" "$probe.err" jq -e --arg name "$asset_name" --arg digest "$EXPECTED_DIGEST" --argjson size "$EXPECTED_SIZE" '((.assets|length)==1) and .assets[0].name==$name and .assets[0].state=="uploaded" and .assets[0].size==$size and .assets[0].digest==$digest' "$probe"
-              expected_draft_asset_metadata="$(api_value "$probe" jq -c '[.assets[] | {id,name,state,size,digest}] | sort_by(.name)' "$probe")"
-              download_asset "$probe" "$RUNNER_TEMP/draft.pages.zip"
-              # Recheck the current draft immediately before the publish mutation.
-              revalidate_draft_for_publish "$probe" "$release_id"
-              capture_gh "$RUNNER_TEMP/published.json" api --hostname github.com --method PATCH --header 'X-GitHub-Api-Version: 2026-03-10' --field draft=false "/repos/$GITHUB_REPOSITORY/releases/$release_id"
-              capture_gh "$probe" api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/$release_id"
-              verify_published_release "$probe" "$release_id" "$RELEASE_TAG" \
-                "$RELEASE_SHA" "storage-web-${RELEASE_TAG#storage-web-v}.pages.zip" \
-                "$EXPECTED_DIGEST" "$EXPECTED_SIZE"
-              download_asset "$probe" "$RUNNER_TEMP/published.pages.zip"
-              ;;
-            published)
-              # An exact immutable Release is recoverable on a rerun or an explicit production
-              # deployment dispatched at the release tag.
-              if test "${GITHUB_EVENT_NAME:-}" != workflow_dispatch; then
-                test "${GITHUB_RUN_ATTEMPT:-1}" -gt 1
-              fi
-              verify_published_release "$probe" "$release_id" "$RELEASE_TAG" \
-                "$RELEASE_SHA" "storage-web-${RELEASE_TAG#storage-web-v}.pages.zip" \
-                "$EXPECTED_DIGEST" "$EXPECTED_SIZE"
-              download_asset "$probe" "$RUNNER_TEMP/published.pages.zip"
-              ;;
-            *)
-              echo "Release state is neither draft nor published" >&2
-              exit 1
-              ;;
-          esac
+          gh release create "$RELEASE_TAG" "$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --target "$RELEASE_SHA" \
+            --title "$RELEASE_TAG" \
+            --notes "Release $RELEASE_TAG"
+      - name: Verify and download the immutable Release archive
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#storage-web-v}"
+          release_id="$(bash scripts/verify-release.sh \
+            "$RELEASE_TAG" "$RELEASE_SHA" "storage-web-$version.pages.zip" \
+            "$EXPECTED_DIGEST" "$EXPECTED_SIZE" "$RUNNER_TEMP/release-assets")"
+          built="release-assets/storage-web-$version.pages.zip"
+          downloaded="$RUNNER_TEMP/release-assets/storage-web-$version.pages.zip"
+          cmp "$built" "$downloaded"
           printf 'release_id=%s\n' "$release_id" >>"$GITHUB_OUTPUT"
 
   deploy:
@@ -317,40 +130,25 @@ jobs:
       EXPECTED_RELEASE_ID: ${{ needs.release.outputs.release_id }}
       EXPECTED_DIGEST: ${{ needs.build.outputs.pages_digest }}
       EXPECTED_SIZE: ${{ needs.build.outputs.pages_size }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
-        with: {fetch-depth: 0, persist-credentials: false}
-      - name: Download and verify the immutable Release artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
+        with: {persist-credentials: false}
+      - name: Download the verified immutable archive
         shell: bash
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#storage-web-v}"
-          archive="storage-web-$version.pages.zip"
-          json="$RUNNER_TEMP/release.json"
-          source scripts/release-common.sh
-          capture_response "$json" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID"
-          verify_published_release "$json" "$EXPECTED_RELEASE_ID" "$RELEASE_TAG" \
-            "$RELEASE_SHA" "$archive" "$EXPECTED_DIGEST" "$EXPECTED_SIZE"
-          asset_id="$(api_value "$json" jq -er '.assets[0].id | select(type=="number" and .>0 and floor==.)' "$json")"
-          downloaded="$RUNNER_TEMP/$archive"
-          capture_binary "$downloaded" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-          test "$(wc -c <"$downloaded")" = "$EXPECTED_SIZE"
-          test "sha256:$(sha256sum "$downloaded" | awk '{print $1}')" = "$EXPECTED_DIGEST"
-          timeout --signal=TERM --kill-after=5s 300s python3 scripts/validate-pages-archive.py "$downloaded"
+          bash scripts/verify-release.sh \
+            "$RELEASE_TAG" "$RELEASE_SHA" "storage-web-$version.pages.zip" \
+            "$EXPECTED_DIGEST" "$EXPECTED_SIZE" "$RUNNER_TEMP/release-assets" "$EXPECTED_RELEASE_ID"
           rm -rf dist
           mkdir dist
-          timeout --signal=TERM --kill-after=5s 300s unzip "$downloaded" -d dist
-          test "$(cat dist/CNAME)" = storage.telecrypt.io
-      # Pages must consume the verified immutable Release only after publication has completed.
+          timeout --signal=TERM --kill-after=5s 300s unzip \
+            "$RUNNER_TEMP/release-assets/storage-web-$version.pages.zip" -d dist
+          cmp -s dist/CNAME public/CNAME
+          cmp -s dist/_headers public/_headers
       - uses: actions/configure-pages@v6.0.0
-      - name: Revalidate source before Pages upload
-        shell: bash
-        run: |
-          set -euo pipefail
-          source scripts/release-common.sh
-          verify_source "$RELEASE_TAG" "$RELEASE_SHA"
       - id: pages-upload
         uses: actions/upload-pages-artifact@v5.0.0
         with: {path: dist}

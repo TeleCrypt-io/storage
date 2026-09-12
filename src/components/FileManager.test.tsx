@@ -307,18 +307,6 @@ describe("FileManager refresh identity", () => {
     );
   });
 
-  it("renders remote names using the SDK contract", async () => {
-    const storage = fakeStorage("shared");
-    vi.mocked(core.listVaults).mockResolvedValue([
-      { id: "!vault:localhost", name: "x".repeat(256) },
-    ]);
-    useStorageMock.mockReturnValue({ storage } as never);
-    render(<FileManager />);
-
-    expect(await screen.findByText("x".repeat(256))).toBeInTheDocument();
-    expect(screen.queryByTestId("vault-list-error")).not.toBeInTheDocument();
-  });
-
   it("clears a selected vault when the account no longer lists it", async () => {
     vi.useFakeTimers();
     const storage = fakeStorage("shared");

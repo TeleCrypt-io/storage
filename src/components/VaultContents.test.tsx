@@ -378,29 +378,6 @@ describe("VaultContents mutation identity", () => {
     );
   });
 
-  it("enforces the byte cap after reading a folder file", async () => {
-    vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.createSubfolder).mockResolvedValue({ id: "!dir:localhost", name: "dir" });
-    const user = userEvent.setup();
-    renderContents("!vault-a:localhost", vi.fn());
-    const file = new File(["small metadata"], "file.bin", { type: "application/octet-stream" });
-    Object.defineProperty(file, "webkitRelativePath", { value: "dir/file.bin" });
-    Object.defineProperty(file, "size", { configurable: true, value: 1 });
-    Object.defineProperty(file, "slice", {
-      configurable: true,
-      value: vi.fn(() => ({
-        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(MAX_FILE_SIZE_BYTES + 1)),
-      })),
-    });
-
-    await user.upload(screen.getByTestId("folder-input"), file);
-
-    expect(core.uploadFile).not.toHaveBeenCalled();
-    expect(await screen.findByTestId("vault-detail-error")).toHaveTextContent(
-      "File exceeds the 128 MiB limit",
-    );
-  });
-
   it("rejects oversized dropped files before reading or calling the SDK", async () => {
     renderContents("!vault-a:localhost", vi.fn());
     const oversized = oversizedFile("too-large.bin");
@@ -457,11 +434,9 @@ describe("VaultContents mutation identity", () => {
   it("reports a file read failure and releases the upload busy state", async () => {
     const file = new File(["data"], "read-fails.txt", { type: "text/plain" });
     const readError = new Error("file read failed");
-    Object.defineProperty(file, "slice", {
+    Object.defineProperty(file, "arrayBuffer", {
       configurable: true,
-      value: vi.fn(() => ({
-        arrayBuffer: vi.fn().mockRejectedValue(readError),
-      })),
+      value: vi.fn().mockRejectedValue(readError),
     });
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn());

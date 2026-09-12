@@ -13,12 +13,6 @@ const developmentConnectSrc =
 // matrix-js-sdk resolves via its own "browser" package.json field, which Vite
 // picks up automatically — no further Node polyfills needed.
 export default defineConfig({
-  build: {
-    // The separately emitted encrypted IndexedDB worker is about 747 kB minified. Keep a narrow
-    // reviewed ceiling above it so this required crypto chunk is not a standing warning and future
-    // growth still fails visibly during release review.
-    chunkSizeWarningLimit: 1024,
-  },
   plugins: [
     react(),
     {

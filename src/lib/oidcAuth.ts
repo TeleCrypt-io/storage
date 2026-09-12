@@ -30,7 +30,6 @@ import {
   savePendingRevocation,
   isRuntimeMatrixDeviceId,
   isRuntimeMatrixUserId,
-  isSessionToken,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_PERSISTENCE_ERROR,
@@ -39,8 +38,6 @@ import {
 import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
 import {
   classifyOidcCallback,
-  MAX_OIDC_CALLBACK_FIELD_BYTES,
-  MAX_OIDC_CALLBACK_URL_BYTES,
   readOidcCallbackParams,
   scrubOidcCallbackParams,
 } from "./oidcCallback";
@@ -49,8 +46,6 @@ import { sanitizeDiagnosticError } from "./errorDetails";
 
 const CLIENT_ID_PREFIX = "telecrypt-io-ui:oidc-client:";
 const DEVICE_ID_PREFIX = "telecrypt-io-ui:device:";
-const MAX_OIDC_METADATA_FIELD_BYTES = 4096;
-const MAX_OIDC_CLIENT_ID_BYTES = 512;
 
 const SAFE_CALLBACK_MESSAGES = new Set([
   "Sign-in failed",
@@ -108,34 +103,6 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Sign-in is no longer active", "AbortError");
 }
 
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
-
-function boundedString(value: unknown, name: string, max = MAX_OIDC_METADATA_FIELD_BYTES): string {
-  if (typeof value !== "string" || value.trim() === "" || utf8ByteLength(value) > max) {
-    throw new Error(`${name} is invalid or too large`);
-  }
-  return value;
-}
-
-function boundedClientId(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.trim() === "" ||
-    utf8ByteLength(value) > MAX_OIDC_CLIENT_ID_BYTES ||
-    /\s/.test(value)
-  ) {
-    throw new Error("OIDC client identifier is invalid or too large");
-  }
-  return value;
-}
-
-function boundedToken(value: unknown, name: string): string {
-  if (!isSessionToken(value)) throw new Error(`${name} is invalid or too large`);
-  return value;
-}
-
 function redirectUri(): string {
   return window.location.origin + "/";
 }
@@ -150,11 +117,7 @@ function isRuntimeHomeserver(candidate: string, runtime: string): boolean {
 
 function persistentStore(): Storage {
   try {
-    const store = window.localStorage;
-    const probe = "telecrypt-io-ui:client-storage-probe";
-    store.setItem(probe, "1");
-    store.removeItem(probe);
-    return store;
+    return window.localStorage;
   } catch (error) {
     throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
@@ -167,19 +130,14 @@ function loadCachedClientId(issuer: string): string | null {
   } catch (error) {
     throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
-  if (cached === null) return null;
-  return boundedClientId(cached);
+  return cached;
 }
 
 function cacheClientId(issuer: string, clientId: string): void {
-  boundedClientId(clientId);
   try {
     const store = persistentStore();
     const key = CLIENT_ID_PREFIX + issuer;
     store.setItem(key, clientId);
-    if (store.getItem(key) !== clientId) {
-      throw new Error("Browser persistent storage is unavailable");
-    }
   } catch (error) {
     throw new Error("Browser persistent storage is unavailable", { cause: error });
   }
@@ -194,19 +152,14 @@ function loadOrCreateDeviceId(issuer: string): string {
   const key = DEVICE_ID_PREFIX + issuer;
   try {
     const store = window.sessionStorage;
-    const probe = "telecrypt-io-ui:device-probe";
-    store.setItem(probe, "1");
-    store.removeItem(probe);
     const existing = store.getItem(key);
     if (existing && /^[0-9A-F]{10}$/.test(existing)) return existing;
-    if (existing) store.removeItem(key);
     const bytes = new Uint8Array(5);
     crypto.getRandomValues(bytes);
     const deviceId = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
       .join("")
       .toUpperCase();
     store.setItem(key, deviceId);
-    if (store.getItem(key) !== deviceId) throw new Error("device id was not persisted");
     return deviceId;
   } catch (error) {
     throw new Error("Browser session storage is unavailable", { cause: error });
@@ -245,27 +198,6 @@ async function cleanPendingRevocations(
   }
 }
 
-function authorizationRedirect(value: unknown, authorizationEndpoint: string): URL {
-  const text = boundedString(value, "OIDC authorization URL", MAX_OIDC_CALLBACK_URL_BYTES);
-  let redirect: URL;
-  try {
-    redirect = new URL(text);
-  } catch {
-    throw new Error("OIDC authorization URL is invalid");
-  }
-  const expected = new URL(authorizationEndpoint);
-  if (
-    redirect.origin !== expected.origin ||
-    redirect.pathname !== expected.pathname ||
-    redirect.username !== "" ||
-    redirect.password !== "" ||
-    redirect.hash !== ""
-  ) {
-    throw new Error("OIDC authorization URL does not match the configured endpoint");
-  }
-  return redirect;
-}
-
 /**
  * Starts the OIDC login flow: discovery → DCR (cached) → PKCE authorization
  * URL → redirect. Never returns normally on success (navigates away);
@@ -298,25 +230,22 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   const { homeserver } = getRuntimeSettings();
   const oidcIssuer = runtimeOidcIssuer();
   const authMetadata = await discoverOidcIssuer(homeserver, signal);
-  if (boundedString(authMetadata.issuer, "OIDC issuer") !== oidcIssuer) {
+  if (authMetadata.issuer !== oidcIssuer) {
     throw new Error("OIDC issuer does not match the configured environment");
   }
-  const authorizationEndpoint = assertRuntimeOidcEndpoint(
-    boundedString(authMetadata.authorization_endpoint, "OIDC authorization endpoint"),
-    "OIDC authorization endpoint",
-  );
+  assertRuntimeOidcEndpoint(authMetadata.authorization_endpoint, "OIDC authorization endpoint");
   assertRuntimeOidcEndpoint(
-    boundedString(authMetadata.token_endpoint, "OIDC token endpoint"),
+    authMetadata.token_endpoint,
     "OIDC token endpoint",
   );
   assertRuntimeOidcEndpoint(
-    boundedString(authMetadata.registration_endpoint, "OIDC registration endpoint"),
+    authMetadata.registration_endpoint,
     "OIDC registration endpoint",
   );
 
   let clientId = loadCachedClientId(authMetadata.issuer);
   if (!clientId || clientId.trim() === "") {
-    clientId = boundedClientId(await registerClient(
+    clientId = await registerClient(
       authMetadata,
       {
         clientName: "TeleCrypt.io Storage (Web)",
@@ -328,7 +257,7 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
         policyUri: undefined,
       },
       signal,
-    ));
+    );
     throwIfAborted(signal);
     cacheClientId(authMetadata.issuer, clientId);
   }
@@ -343,9 +272,9 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
     signal,
   });
   throwIfAborted(signal);
-  const redirect = authorizationRedirect(url, authorizationEndpoint);
+  const redirect = new URL(url);
   const states = redirect.searchParams.getAll("state");
-  if (states.length !== 1 || !states[0] || !saveOidcLoginIntent({ state: states[0], createdAt: Date.now() })) {
+  if (states.length !== 1 || !states[0] || !saveOidcLoginIntent({ state: states[0] })) {
     const persistenceFailure = new Error(SESSION_PERSISTENCE_ERROR);
     if (!clearOidcTransientState()) {
       throw publicFailure(SESSION_PERSISTENCE_ERROR, [
@@ -412,8 +341,8 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   let completed: Awaited<ReturnType<typeof completeAuthorizationCodeFlow>>;
   try {
     completed = await completeAuthorizationCodeFlow(
-      boundedString(code, "OIDC authorization code", MAX_OIDC_CALLBACK_FIELD_BYTES),
-      boundedString(state, "OIDC state", MAX_OIDC_CALLBACK_FIELD_BYTES),
+      code,
+      state,
       signal,
     );
   } catch (error) {
@@ -421,6 +350,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   }
   const sessionCleared = clearSession();
   const { tokenResponse, oidcClientSettings, homeserverUrl } = completed;
+  const accessToken = tokenResponse.access_token;
   const { homeserver, serverName } = getRuntimeSettings();
   const homeserverIsRuntime = isRuntimeHomeserver(homeserverUrl, homeserver);
 
@@ -439,12 +369,9 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
       throw new Error("OIDC callback client identity could not be verified");
     }
 
-    const accessToken = boundedToken(tokenResponse.access_token, "OIDC access token");
-
-    const refreshToken = boundedToken(tokenResponse.refresh_token, "OIDC refresh token");
-
-    const scope = boundedString(tokenResponse.scope, "OIDC scope", MAX_OIDC_CALLBACK_FIELD_BYTES);
-    const deviceId = extractDeviceIdFromScope(scope);
+    const refreshToken = tokenResponse.refresh_token;
+    if (!refreshToken) throw new Error("Sign-in failed");
+    const deviceId = extractDeviceIdFromScope(tokenResponse.scope ?? "");
     if (!deviceId) {
       throw new Error("completeOidcLoginFromCallback: granted scope did not include a device_id");
     }
@@ -453,8 +380,6 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
     if (who.deviceId !== deviceId) {
       throw new Error("OIDC device identity could not be verified");
     }
-    boundedString(who.userId, "OIDC user identity", MAX_OIDC_CALLBACK_FIELD_BYTES);
-    boundedString(who.deviceId, "OIDC device identity", MAX_OIDC_CALLBACK_FIELD_BYTES);
     if (!isRuntimeMatrixUserId(who.userId) || !isRuntimeMatrixDeviceId(who.deviceId)) {
       throw new Error("OIDC Matrix identity could not be verified");
     }
@@ -472,22 +397,11 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
     // The authorization server has already issued a bearer token. Revoke it before
     // reporting a callback validation failure; if that request is uncertain, retain
     // only a tab-scoped retry record so the next sign-in attempt can retry revocation.
-    let accessToken: string | null = null;
-    let accessTokenValidationError: unknown;
-    try {
-      accessToken = boundedToken(tokenResponse.access_token, "OIDC access token");
-    } catch (validationError) {
-      accessTokenValidationError = validationError;
-    }
     const primary = safeCallbackFailure(error);
-    const canRetryCleanup = homeserverIsRuntime && accessToken !== null;
-    if (canRetryCleanup && accessToken !== null) {
+    if (homeserverIsRuntime) {
       const target = { homeserver, accessToken };
       const cleanupError = await revokeOrRemember(target, signal, primary);
       if (cleanupError) throw cleanupError;
-    }
-    if (accessTokenValidationError !== undefined) {
-      throw publicFailure(primary.message, [primary, accessTokenValidationError]);
     }
     throw primary;
   }

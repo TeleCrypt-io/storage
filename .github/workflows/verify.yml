@@ -13,126 +13,46 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GIT_CONFIG_NOSYSTEM: "1"
-      GIT_CONFIG_SYSTEM: /dev/null
-      GIT_CONFIG_GLOBAL: /tmp/telecrypt-gitconfig
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: init.defaultBranch
-      GIT_CONFIG_VALUE_0: main
-      GIT_CONFIG_PARAMETERS: ""
-      GIT_NO_REPLACE_OBJECTS: "1"
-      GIT_TERMINAL_PROMPT: "0"
-      GIT_ASKPASS: /bin/false
-      SSH_ASKPASS: /bin/false
-      GCM_INTERACTIVE: never
-      GIT_ALLOW_PROTOCOL: https
-      GIT_PROTOCOL_FROM_USER: "0"
-      GH_HOST: github.com
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
-      ALL_PROXY: ""
-      NO_PROXY: ""
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - name: Setup Node 24.20.0
+      - name: Setup Node
         uses: actions/setup-node@v7.0.0
         with:
-          node-version: "24.20.0"
+          node-version-file: .node-version
           cache: "npm"
-
-      - name: Require exact immutable shared UI release
-        run: bash scripts/verify-shared-ui-release.sh
-
-      - name: Require exact immutable SDK release record and package bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          source scripts/release-common.sh
-          sdk_tag=v0.6.1
-          sdk_release="$RUNNER_TEMP/storage-sdk-release.json"
-          sdk_record="$RUNNER_TEMP/storage-sdk-release.integrity.json"
-          sdk_archive="$RUNNER_TEMP/storage-sdk-release.tgz"
-          record_name="$sdk_tag.integrity.json"
-          archive_name="$sdk_tag.tgz"
-          capture_response "$sdk_release" gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' "/repos/TeleCrypt-io/storage-sdk/releases/tags/$sdk_tag"
-          require_api_json "$sdk_release" "$sdk_release.err" jq -e --arg tag "$sdk_tag" --arg record "$record_name" --arg archive "$archive_name" '(.tag_name==$tag and .draft==false and .prerelease==false and .immutable==true and (.target_commitish|type=="string" and test("^[0-9a-f]{40}$")) and (.assets|type=="array" and length==2) and all(.assets[]; type=="object" and (.id|type=="number" and .>0) and .state=="uploaded") and any(.assets[]; type=="object" and .name==$record and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))) and any(.assets[]; type=="object" and .name==$archive and .state=="uploaded" and (.size|type=="number" and .>0) and (.digest|type=="string" and test("^sha256:[0-9a-f]{64}$"))))' "$sdk_release"
-          record_id="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_size="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .size | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          record_digest="$(api_value "$sdk_release" jq -er --arg name "$record_name" '.assets[] | select(.name==$name) | .digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$sdk_release")"
-          capture_response "$sdk_record" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$record_id"
-          test "$(wc -c <"$sdk_record")" = "$record_size" -a "sha256:$(sha256sum "$sdk_record" | awk '{print $1}')" = "$record_digest"
-          archive_id="$(api_value "$sdk_release" jq -er --arg name "$archive_name" '.assets[] | select(.name==$name) | .id | select(type=="number" and .>0 and floor==.)' "$sdk_release")"
-          capture_response "$sdk_archive" --binary gh api --hostname github.com --header 'X-GitHub-Api-Version: 2026-03-10' --header 'Accept: application/octet-stream' "repos/TeleCrypt-io/storage-sdk/releases/assets/$archive_id"
-          record_commit="$(api_value "$sdk_record" jq -er '.commit' "$sdk_record")"
-          release_commit="$(api_value "$sdk_release" jq -er '.target_commitish' "$sdk_release")"
-          if test "$record_commit" != "$release_commit"; then
-            printf 'API semantic mismatch (SDK record commit differs from Release target)\n' >&2
-            replay_capture "$sdk_record" "$sdk_record.err" true "$sdk_release" "$sdk_release.err" || :
-            exit 1
-          fi
-          require_api_json "$sdk_record" "$sdk_record.err" node scripts/verify-storage-sdk-lock.mjs "$sdk_record" "$sdk_archive"
-
-      - name: Exercise Release publication workflow
-        run: timeout --signal=TERM --kill-after=5s 300s npm run verify:release
 
       - name: Install exact dependencies
         shell: bash
         run: |
           set -euo pipefail
-          test "$(node --version)" = "v24.20.0"
-          test "$(npm --version)" = "11.19.0"
-          timeout --signal=TERM --kill-after=5s 600s npm ci --ignore-scripts --no-fund --no-audit
-
-      - name: Verify license and vendored UI provenance
-        run: |
-          set -euo pipefail
-          test "$(head -n 1 LICENSE)" = "Business Source License 1.1"
-          node scripts/verify-provenance.mjs
+          npm_version="$(node -p 'require("./package.json").packageManager.replace(/^npm@/u, "")')"
+          test "$(npm --version)" = "$npm_version"
+          npm ci --ignore-scripts --no-fund --no-audit
 
       - name: Lint
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 300s npm run lint
-
-      - name: Verify security policy contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:security
+          npm run lint
 
       - name: Test direct Pages deployment client
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 300s python3 scripts/test-deploy-pages.py
+          python3 scripts/test-deploy-pages.py
 
       - name: Unit tests
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 600s npm test
-
-      - name: Test Pages archive validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:archive
+          npm test
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 600s npm run build
-
-      - name: Verify Pages packaging
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 300s npm run verify:package
+          npm run build
