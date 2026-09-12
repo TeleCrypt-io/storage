@@ -4,7 +4,6 @@
 capture_pid=""
 capture_stdout_path=""
 capture_stderr_path=""
-capture_extra_paths=()
 
 capture_signal() {
   local signal="$1" kill_status=0 kill_probe_status=0 wait_status=0
@@ -43,11 +42,6 @@ capture_signal() {
       printf 'diagnostic stderr replay failed (status %s)\n' "$?" >&2
     fi
   fi
-  for capture_extra_path in "${capture_extra_paths[@]}"; do
-    if cat "$capture_extra_path" >&2; then :; else
-      printf 'diagnostic replay failed for %s (status %s)\n' "$capture_extra_path" "$?" >&2
-    fi
-  done
   exit "$((128 + signal))"
 }
 
@@ -107,15 +101,6 @@ replay_capture() {
     fi
   done
   return "$replay_status"
-}
-
-require_capture() {
-  local stdout_path="$1" stderr_path="$2" status
-  shift 2
-  if "$@"; then return 0; else status="$?"; fi
-  local replay_status=0
-  replay_capture "$stdout_path" "$stderr_path" || replay_status="$?"
-  return "$status"
 }
 
 capture_response() {
