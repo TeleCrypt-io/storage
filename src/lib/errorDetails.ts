@@ -4,7 +4,7 @@ const SENSITIVE_ASSIGNMENT_PREFIX =
   `\\b${SENSITIVE_KEY_SOURCE}\\b["']?\\s*[:=]\\s*`;
 const SENSITIVE_KEY_PATTERN = new RegExp(`^${SENSITIVE_KEY_SOURCE}$`, "iu");
 const QUOTED_SENSITIVE_ASSIGNMENT_PATTERN = new RegExp(
-  `(${SENSITIVE_ASSIGNMENT_PREFIX})(["'])([\\s\\S]*?)\\2`,
+  String.raw`(${SENSITIVE_ASSIGNMENT_PREFIX})("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`,
   "giu",
 );
 const UNQUOTED_SENSITIVE_ASSIGNMENT_PATTERN = new RegExp(
@@ -36,7 +36,10 @@ export function sanitizeDiagnosticText(value: string): string {
   sanitized = sanitized.replace(URI_CREDENTIAL_PATTERN, "$1[REDACTED]@");
   sanitized = sanitized.replace(URI_SECRET_PARAMETER_PATTERN, "$1[REDACTED]");
   sanitized = sanitized.replace(BEARER_PATTERN, "$1[REDACTED]");
-  sanitized = sanitized.replace(QUOTED_SENSITIVE_ASSIGNMENT_PATTERN, "$1$2[REDACTED]$2");
+  sanitized = sanitized.replace(
+    QUOTED_SENSITIVE_ASSIGNMENT_PATTERN,
+    (_match, prefix: string, quoted: string) => `${prefix}${quoted[0]}[REDACTED]${quoted[0]}`,
+  );
   sanitized = sanitized.replace(UNQUOTED_SENSITIVE_ASSIGNMENT_PATTERN, "$1[REDACTED]");
   sanitized = sanitized.replace(TOKEN_VALUE_PATTERN, "$1[REDACTED]");
   return escapeControlCharacters(sanitized);

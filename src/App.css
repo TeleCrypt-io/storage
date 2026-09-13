@@ -285,13 +285,6 @@
   font-size: 0.78em;
 }
 
-.members-panel.embedded {
-  width: auto;
-  padding: 0;
-  background: none;
-  border: none;
-}
-
 .access-section {
   border-top: 1px solid var(--border);
   padding-top: 16px;
@@ -516,28 +509,12 @@
 }
 
 .members-panel {
-  width: var(--members-width);
+  width: auto;
   flex-shrink: 0;
-  padding: 16px;
-  background: var(--surface);
-  border-left: 1px solid var(--border);
   overflow-y: auto;
-}
-
-.members-panel-toggle {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
   padding: 0;
-  margin-bottom: 8px;
-  border: none;
   background: none;
-  font-weight: 600;
-  font-size: 0.75em;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  cursor: pointer;
+  border: none;
 }
 
 .members-panel-hint {

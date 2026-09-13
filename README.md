@@ -2,7 +2,7 @@
 
 The static React/Vite site served at [storage.telecrypt.io](https://storage.telecrypt.io).
 Current TeleCrypt project facts and product decisions are maintained only in the canonical
-[`llms.txt`](https://telecrypt.io/llms.txt); this README documents this website implementation.
+[`llms.txt`](https://telecrypt-io.github.io/llms-authority/llms.txt); this README documents this website implementation.
 It consumes the browser SDK version pinned in `package.json` and `package-lock.json`, installed
 with `npm ci`.
 Storage protocol, cryptography, and the command-line client deliberately live in their own

@@ -78,25 +78,21 @@ function safeCallbackFailure(error: unknown): Error {
 }
 
 function clearTransientOrThrow(primary: Error): never {
-  let cleared: boolean;
   try {
-    cleared = clearOidcTransientState();
+    clearOidcTransientState();
   } catch (error) {
     throw publicFailure(primary.message, [primary, error]);
   }
-  if (cleared) throw primary;
-  throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
+  throw primary;
 }
 
 function clearSessionOrThrow(primary: Error): never {
-  let cleared: boolean;
   try {
-    cleared = clearSession();
+    clearSession();
   } catch (error) {
     throw publicFailure(primary.message, [primary, error]);
   }
-  if (cleared) throw primary;
-  throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
+  throw primary;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -176,8 +172,8 @@ async function cleanPendingRevocations(
     if (cleanupError) throw cleanupError;
     try {
       throwIfAborted(signal);
-      if (clearMatchingSession && loadSession()?.accessToken === pending.accessToken && !clearSession()) {
-        throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
+      if (clearMatchingSession && loadSession()?.accessToken === pending.accessToken) {
+        clearSession();
       }
     } catch (error) {
       // revokeOrRemember removes the pending marker after remote revocation.
@@ -206,7 +202,7 @@ async function cleanPendingRevocations(
 export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   assertSessionStorageWritable();
-  if (!clearOidcTransientState()) throw new Error(SESSION_PERSISTENCE_ERROR);
+  clearOidcTransientState();
   await cleanPendingRevocations(true, signal);
   let existingSession = loadSession();
   while (existingSession) {
@@ -225,7 +221,7 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
       existingSession = rotatedSession;
     }
   }
-  if (!clearSession()) throw new Error(SESSION_PERSISTENCE_ERROR);
+  clearSession();
   throwIfAborted(signal);
   const { homeserver } = getRuntimeSettings();
   const oidcIssuer = runtimeOidcIssuer();
@@ -275,14 +271,7 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   const redirect = new URL(url);
   const states = redirect.searchParams.getAll("state");
   if (states.length !== 1 || !states[0] || !saveOidcLoginIntent({ state: states[0] })) {
-    const persistenceFailure = new Error(SESSION_PERSISTENCE_ERROR);
-    if (!clearOidcTransientState()) {
-      throw publicFailure(SESSION_PERSISTENCE_ERROR, [
-        persistenceFailure,
-        new Error(SESSION_PERSISTENCE_ERROR),
-      ]);
-    }
-    throw persistenceFailure;
+    clearTransientOrThrow(new Error(SESSION_PERSISTENCE_ERROR));
   }
   throwIfAborted(signal);
   window.location.href = redirect.toString();
@@ -322,11 +311,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   try {
     await cleanPendingRevocations(false, signal);
   } catch (error) {
-    const primary = safeCallbackFailure(error);
-    if (!clearOidcTransientState()) {
-      throw publicFailure(primary.message, [primary, new Error(SESSION_PERSISTENCE_ERROR)]);
-    }
-    throw primary;
+    clearTransientOrThrow(safeCallbackFailure(error));
   }
 
   if (callbackError) {
@@ -348,7 +333,6 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   } catch (error) {
     clearSessionOrThrow(safeCallbackFailure(error));
   }
-  const sessionCleared = clearSession();
   const { tokenResponse, oidcClientSettings, homeserverUrl } = completed;
   const accessToken = tokenResponse.access_token;
   const { homeserver, serverName } = getRuntimeSettings();
@@ -356,7 +340,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
 
   try {
     throwIfAborted(signal);
-    if (!sessionCleared) throw new Error(SESSION_PERSISTENCE_ERROR);
+    clearSession();
     const oidcIssuer = runtimeOidcIssuer();
     if (!homeserverIsRuntime) {
       throw new Error("OIDC callback homeserver does not match the configured environment");

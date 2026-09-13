@@ -373,9 +373,14 @@ export function StorageProvider({ children }: { children: ReactNode }) {
   const resetConnection = useCallback((clearPersistedSession: boolean, primary?: unknown) => {
     const cleanupError = invalidateActiveConnection();
     const activeFailure = preserveFailure(primary, cleanupError);
-    const persistedSessionCleared = !clearPersistedSession || clearSession();
-    const persistenceError = persistedSessionCleared ? undefined : new Error(SESSION_PERSISTENCE_ERROR);
-    const failure = preserveFailure(activeFailure, persistenceError);
+    let failure = activeFailure;
+    if (clearPersistedSession) {
+      try {
+        clearSession();
+      } catch (error) {
+        failure = preserveFailure(failure, error);
+      }
+    }
     setStatus(failure ? "error" : "signed-out");
     setError(failure ? formatOperationError(failure) : null);
   }, [invalidateActiveConnection]);

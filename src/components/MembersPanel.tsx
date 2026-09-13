@@ -26,14 +26,13 @@ function isCanonicalMemberId(value: unknown): value is string {
   return typeof value === "string" && isRuntimeMatrixUserId(value);
 }
 
-export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?: boolean }) {
+export function MembersPanel({ vaultId }: { vaultId: string }) {
   const { storage, session, accountSignal } = useStorage();
   const [members, setMembers] = useState<Member[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [shareUserId, setShareUserId] = useState("");
   const [shareRole, setShareRole] = useState<"viewer" | "editor">("editor");
-  const [expanded, setExpanded] = useState(true);
   const identityRef = useRef<{ storage: typeof storage; vaultId: string }>({
     storage: null,
     vaultId: "",
@@ -207,106 +206,85 @@ export function MembersPanel({ vaultId, embedded }: { vaultId: string; embedded?
   }
 
   return (
-    <aside className={`members-panel${embedded ? " embedded" : ""}`} data-testid="members-panel">
-      {embedded ? (
-        <h3 className="panel-section-title">Access</h3>
-      ) : (
-        <button
-          type="button"
-          className="members-panel-toggle"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-        >
-          <span>Access</span>
-          <span className="muted">{members?.length ?? "…"}</span>
-        </button>
+    <aside className="members-panel" data-testid="members-panel">
+      <h3 className="panel-section-title">Access</h3>
+      {(error ?? ownershipUnavailable) && (
+        <p className="error" data-testid="members-error">
+          {error ?? ownershipUnavailable}
+        </p>
       )}
 
-      {(embedded || expanded) && (
-        <>
-          {!embedded && (
-            <p className="members-panel-hint muted">Everyone with access to this vault</p>
-          )}
-
-          {(error ?? ownershipUnavailable) && (
-            <p className="error" data-testid="members-error">
-              {error ?? ownershipUnavailable}
-            </p>
-          )}
-
-          <ul className="member-list" data-testid="member-list">
-            {members === null ? (
-              <li className="muted">Loading…</li>
-            ) : members.length === 0 ? (
-              <li className="muted">No members</li>
-            ) : (
-              members.map((m) => (
-                <li key={m.userId} className="member-item" data-testid="member-item" data-user-id={m.userId}>
-                  <span className="member-avatar" aria-hidden="true">
-                    {initials(m.userId)}
-                  </span>
-                  <span className="member-info">
-                    <span className="member-name">{displayName(m.userId)}</span>
-                    <span className={`role-pill ${m.role} ${m.membership === "invite" ? "invited" : ""}`}>
-                      {m.membership === "invite" ? `${m.role} · invited` : m.role}
-                    </span>
-                  </span>
-                  {canManage && m.role !== "owner" && m.userId !== session?.userId && (
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Remove"
-                      aria-label={`Remove ${displayName(m.userId)}`}
-                      onClick={() => handleUnshare(m.userId)}
-                      disabled={busy}
-                      data-testid="unshare-member"
-                    >
-                      ×
-                    </button>
-                  )}
-                </li>
-              ))
-            )}
-          </ul>
-
-          {canManage ? (
-            <form onSubmit={handleShare} className="invite-form">
-              <label htmlFor="share-user-id">Invite user</label>
-              <input
-                id="share-user-id"
-                placeholder="@user:homeserver"
-                value={shareUserId}
-                onChange={(e) => setShareUserId(e.target.value)}
-                maxLength={MAX_MATRIX_ID_BYTES}
-                data-testid="share-user-id"
-              />
-              <div className="invite-form-row">
-                <label htmlFor="share-role">Role</label>
-                <select
-                  id="share-role"
-                  value={shareRole}
-                  onChange={(e) => setShareRole(e.target.value as "viewer" | "editor")}
-                  data-testid="share-role"
-                >
-                  <option value="viewer">Viewer</option>
-                  <option value="editor">Editor</option>
-                </select>
+      <ul className="member-list" data-testid="member-list">
+        {members === null ? (
+          <li className="muted">Loading…</li>
+        ) : members.length === 0 ? (
+          <li className="muted">No members</li>
+        ) : (
+          members.map((m) => (
+            <li key={m.userId} className="member-item" data-testid="member-item" data-user-id={m.userId}>
+              <span className="member-avatar" aria-hidden="true">
+                {initials(m.userId)}
+              </span>
+              <span className="member-info">
+                <span className="member-name">{displayName(m.userId)}</span>
+                <span className={`role-pill ${m.role} ${m.membership === "invite" ? "invited" : ""}`}>
+                  {m.membership === "invite" ? `${m.role} · invited` : m.role}
+                </span>
+              </span>
+              {canManage && m.role !== "owner" && m.userId !== session?.userId && (
                 <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={busy || !shareUserId.trim()}
-                  data-testid="share-submit"
+                  type="button"
+                  className="icon-btn"
+                  title="Remove"
+                  aria-label={`Remove ${displayName(m.userId)}`}
+                  onClick={() => handleUnshare(m.userId)}
+                  disabled={busy}
+                  data-testid="unshare-member"
                 >
-                  Invite
+                  ×
                 </button>
-              </div>
-            </form>
-          ) : (
-            <p className="members-panel-hint muted" data-testid="members-readonly">
-              Only vault owners can manage access.
-            </p>
-          )}
-        </>
+              )}
+            </li>
+          ))
+        )}
+      </ul>
+
+      {canManage ? (
+        <form onSubmit={handleShare} className="invite-form">
+          <label htmlFor="share-user-id">Invite user</label>
+          <input
+            id="share-user-id"
+            placeholder="@user:homeserver"
+            value={shareUserId}
+            onChange={(e) => setShareUserId(e.target.value)}
+            maxLength={MAX_MATRIX_ID_BYTES}
+            data-testid="share-user-id"
+          />
+          <div className="invite-form-row">
+            <label htmlFor="share-role">Role</label>
+            <select
+              id="share-role"
+              value={shareRole}
+              onChange={(e) => setShareRole(e.target.value as "viewer" | "editor")}
+              data-testid="share-role"
+            >
+              <option value="viewer">Viewer</option>
+              <option value="editor">Editor</option>
+            </select>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={busy || !shareUserId.trim()}
+              data-testid="share-submit"
+            >
+              Invite
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="members-panel-hint muted" data-testid="members-readonly">
+          Only vault owners can manage access.
+        </p>
       )}
     </aside>
   );

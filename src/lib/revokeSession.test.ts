@@ -112,38 +112,16 @@ describe("revokeMatrixSession", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
   });
 
-  it("bounds successful response cleanup", async () => {
-    vi.useFakeTimers();
-    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
-    const response = new Response(null, { status: 204 });
-    Object.defineProperty(response, "url", { value: endpoint });
-    const cancel = vi.fn(() => new Promise<void>(() => undefined));
-    Object.defineProperty(response, "body", { value: { cancel } });
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
-    const result = revokeMatrixSession(target, fetchMock);
-    const assertion = expect(result).rejects.toMatchObject({ reason: "failed" });
-    await vi.advanceTimersByTimeAsync(5_000);
-    await assertion;
-    expect(cancel).toHaveBeenCalledTimes(1);
-  });
-
-  it("propagates successful-response cleanup failures", async () => {
-    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
-    const response = new Response(null, { status: 204 });
-    Object.defineProperty(response, "url", { value: endpoint });
-    Object.defineProperty(response, "body", {
-      value: { cancel: vi.fn().mockRejectedValue(new Error("response cleanup failed")) },
-    });
+  it("finishes confirmed logout without waiting for the unused response stream", async () => {
+    const cancellation = deferred<void>();
+    const response = new Response(new ReadableStream({
+      cancel: () => cancellation.promise,
+    }), { status: 200 });
+    Object.defineProperty(response, "url", { value: `${target.homeserver}/_matrix/client/v3/logout` });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    let caught: unknown;
-    try {
-      await revokeMatrixSession(target, fetchMock);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toMatchObject({ reason: "failed" });
-    expect(formatOperationError(caught)).toContain("response cleanup failed");
+    await expect(revokeMatrixSession(target, fetchMock)).resolves.toBeUndefined();
+    cancellation.reject(new Error("underlying stream disposal failed"));
   });
 
   it("preserves response-body read failures as a cause", async () => {

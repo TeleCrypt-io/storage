@@ -294,6 +294,48 @@ describe("VaultContents mutation identity", () => {
     expect(document.querySelector('[data-testid="download-anchor"]')).not.toBeInTheDocument();
   });
 
+  it("shares an in-flight folder creation after navigating away and back", async () => {
+    const firstCreation = deferred<void>();
+    const folders: Array<{ id: string; name: string }> = [];
+    vi.mocked(core.listSubfolders).mockImplementation(async () => [...folders]);
+    vi.mocked(core.createSubfolder).mockImplementation(async () => {
+      await firstCreation.promise;
+      const folder = { id: `!dir-${folders.length}:localhost`, name: "dir" };
+      folders.push(folder);
+      return folder;
+    });
+    vi.mocked(core.uploadFile).mockResolvedValue({ id: "$file" } as never);
+    const props = {
+      breadcrumb: [{ id: "!vault-a:localhost", name: "Vault" }],
+      isVaultRoot: true,
+      onNavigate: vi.fn(), onNavUp: vi.fn(), onOpenSubfolder: vi.fn(),
+      onFolderRenamed: vi.fn(), onFolderDeleted: vi.fn(), onSelect: vi.fn(),
+      selection: null,
+    };
+    const view = render(<VaultContents {...props} treeId="!vault-a:localhost" />);
+    const user = userEvent.setup();
+    const file = (name: string) => {
+      const result = new File([name], name, { type: "text/plain" });
+      Object.defineProperty(result, "webkitRelativePath", { value: `dir/${name}` });
+      return result;
+    };
+    await user.upload(screen.getByTestId("folder-input"), file("first.txt"));
+    await waitFor(() => expect(core.createSubfolder).toHaveBeenCalledOnce());
+    view.rerender(<VaultContents {...props} treeId="!vault-b:localhost" />);
+    view.rerender(<VaultContents {...props} treeId="!vault-a:localhost" />);
+    await user.upload(screen.getByTestId("folder-input"), file("second.txt"));
+    await act(async () => firstCreation.resolve());
+    await waitFor(() => expect(core.uploadFile).toHaveBeenCalled());
+
+    expect(folders).toEqual([{ id: "!dir-0:localhost", name: "dir" }]);
+    expect(core.createSubfolder).toHaveBeenCalledOnce();
+    expect(core.uploadFile).toHaveBeenCalledOnce();
+    expect(core.uploadFile).toHaveBeenCalledWith(
+      expect.anything(), "!dir-0:localhost", "second.txt", expect.any(Uint8Array), "text/plain",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("stops folder path creation at the first navigation boundary", async () => {
     const createdFolder = deferred<{ id: string; name: string }>();
     let folderUploadStarted = false;

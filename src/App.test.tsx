@@ -55,11 +55,8 @@ vi.mock("./lib/revokeSession", async () => {
   const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
     try {
       await revokeMatrixSession(target, undefined, signal);
-      if (session.clearPendingRevocation(target)) return null;
-      const cleanupError = new Error("Session cleanup persistence failed");
-      return primary instanceof Error
-        ? new Error(primary.message, { cause: new AggregateError([primary, cleanupError]) })
-        : cleanupError;
+      session.clearPendingRevocation(target);
+      return null;
     } catch (error) {
       const recorded = session.savePendingRevocation(target);
       return new Error(
@@ -277,6 +274,22 @@ describe("formatOperationError", () => {
     expect(namedDetail).toContain("name=BackendFailure");
     expect(namedDetail).toContain("stack=BackendFailure: named failure\\u000a");
 
+  });
+
+  it("redacts complete escaped JSON secrets while retaining response diagnostics", () => {
+    const body = JSON.stringify({
+      password: 'prefix"password-tail',
+      token: 'prefix\\"token-tail',
+      recovery_key: 'prefix"recovery-tail',
+      status: 502,
+      detail: "upstream unavailable",
+    });
+    const detail = formatOperationError(new Error(body));
+    expect(detail).toContain('"status":502');
+    expect(detail).toContain("upstream unavailable");
+    expect(detail).not.toContain("password-tail");
+    expect(detail).not.toContain("token-tail");
+    expect(detail).not.toContain("recovery-tail");
   });
 
   it("preserves persistence and retry failure details", () => {

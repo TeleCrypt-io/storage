@@ -9,7 +9,6 @@ import {
 import { sanitizeDiagnosticError, sanitizeDiagnosticText } from "./errorDetails";
 
 const SESSION_REVOKE_TIMEOUT_MS = 10_000;
-const RESPONSE_CLEANUP_TIMEOUT_MS = 5_000;
 
 export type SessionRevocationTarget = {
   homeserver: string;
@@ -40,11 +39,8 @@ export async function revokeOrRemember(
 
   try {
     await revokeMatrixSession(target, undefined, signal);
-    if (clearPendingRevocation(target)) return null;
-    return failure(primaryError instanceof Error ? primaryError.message : SESSION_CLEANUP_PERSISTENCE_ERROR, [
-      primaryError,
-      new Error(SESSION_CLEANUP_PERSISTENCE_ERROR),
-    ]);
+    clearPendingRevocation(target);
+    return null;
   } catch (error) {
     let recorded = false;
     let persistenceError: unknown;
@@ -97,25 +93,10 @@ function logoutEndpoint(homeserver: string): string {
   return new URL("/_matrix/client/v3/logout", runtimeHomeserver).toString();
 }
 
-async function cancelResponseBody(response: Response): Promise<void> {
-  if (!response.body) return;
-  const cancellation = Promise.resolve().then(() => response.body!.cancel());
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => {
-        reject(new Error("session revocation response cleanup timed out"));
-      },
-      RESPONSE_CLEANUP_TIMEOUT_MS,
-    );
-  });
-  try {
-    await Promise.race([cancellation, deadline]);
-  } catch (error) {
-    throw new SessionRevocationError("failed", { cause: sanitizeDiagnosticError(error) });
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+function cancelResponseBody(response: Response): void {
+  // The HTTP result owns logout success. Disposing an unused body must not delay or
+  // reverse confirmed revocation, including when the underlying stream has failed.
+  void Promise.resolve().then(() => response.body?.cancel()).catch(() => undefined);
 }
 
 function responseStatus(response: Response): string {
@@ -136,15 +117,8 @@ async function readResponseBody(response: Response): Promise<ResponseBodyRead> {
   try {
     return { ok: true, text: await response.text() };
   } catch (error) {
-    const failures: unknown[] = [sanitizeDiagnosticError(error)];
-    try {
-      await cancelResponseBody(response);
-    } catch (cleanupError) {
-      failures.push(sanitizeDiagnosticError(cleanupError));
-    }
-    const cause = failures.length === 1
-      ? failures[0]
-      : new AggregateError(failures, "response body read and cleanup failed", { cause: failures[0] });
+    cancelResponseBody(response);
+    const cause = sanitizeDiagnosticError(error);
     return {
       ok: false,
       error: new Error(`${responseStatus(response)}: response body could not be read`, { cause }),
@@ -247,7 +221,7 @@ export async function revokeMatrixSession(
       });
       throw failure;
     }
-    await cancelResponseBody(response);
+    cancelResponseBody(response);
   } catch (error) {
     if (error instanceof SessionRevocationError) throw error;
     throw new SessionRevocationError(timedOut ? "timed-out" : "failed", {

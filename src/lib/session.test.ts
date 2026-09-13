@@ -169,7 +169,8 @@ describe("tab-scoped session persistence", () => {
       homeserver: SESSION.homeserver,
       accessToken: "volatile-token",
     }]);
-    expect(clearPendingRevocation()).toBe(true);
+    clearPendingRevocation();
+    expect(loadPendingRevocations()).toEqual([]);
   });
 
   it("retains the volatile cleanup token when persistent removal is denied", () => {

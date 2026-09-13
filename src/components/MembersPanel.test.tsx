@@ -63,7 +63,7 @@ describe("MembersPanel access state", () => {
     vi.mocked(core.listMembers)
       .mockResolvedValueOnce([{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }])
       .mockRejectedValueOnce(new Error("membership unavailable"));
-    render(<MembersPanel vaultId="!vault:localhost" embedded />);
+    render(<MembersPanel vaultId="!vault:localhost" />);
 
     await act(async () => {
       await Promise.resolve();
@@ -114,7 +114,7 @@ describe("MembersPanel access state", () => {
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
     const user = userEvent.setup();
-    render(<MembersPanel vaultId="!vault:localhost" embedded />);
+    render(<MembersPanel vaultId="!vault:localhost" />);
     await screen.findByText("No members");
     await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
     const submit = user.click(screen.getByTestId("share-submit"));
@@ -133,7 +133,7 @@ describe("MembersPanel access state", () => {
     vi.mocked(core.listMembers).mockResolvedValue([
       { userId: "@bob+device:localhost:8008", role: "viewer", membership: "join" },
     ]);
-    render(<MembersPanel vaultId="!vault:localhost" embedded />);
+    render(<MembersPanel vaultId="!vault:localhost" />);
     expect(await screen.findByTestId("member-item")).toHaveAttribute(
       "data-user-id",
       "@bob+device:localhost:8008",

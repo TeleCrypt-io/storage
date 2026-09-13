@@ -206,18 +206,17 @@ export function saveSessionIfCurrent(session: Session, expected: Session | null)
   }
 }
 
-export function clearSession(): boolean {
+export function clearSession(): void {
   try {
     const store = sessionStore();
     store.removeItem(SESSION_STORAGE_KEY);
     clearOidcTransientStateFromStore(store);
-    return true;
   } catch (error) {
     throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
 }
 
-function clearOidcTransientStateFromStore(store: Storage): boolean {
+function clearOidcTransientStateFromStore(store: Storage): void {
   for (let index = store.length - 1; index >= 0; index -= 1) {
     const key = store.key(index);
     if (key && OIDC_STATE_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
@@ -225,14 +224,13 @@ function clearOidcTransientStateFromStore(store: Storage): boolean {
     }
   }
   store.removeItem(OIDC_LOGIN_INTENT_STORAGE_KEY);
-  return true;
 }
 
 /** Clear only one-time OIDC state, preserving any live authenticated session. */
-export function clearOidcTransientState(): boolean {
+export function clearOidcTransientState(): void {
   try {
     const store = sessionStore();
-    return clearOidcTransientStateFromStore(store);
+    clearOidcTransientStateFromStore(store);
   } catch (error) {
     throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
@@ -310,7 +308,7 @@ export function savePendingRevocation(target: PendingRevocation): boolean {
   }
 }
 
-export function clearPendingRevocation(target?: PendingRevocation): boolean {
+export function clearPendingRevocation(target?: PendingRevocation): void {
   try {
     const store = sessionStore();
     const remaining = target
@@ -323,7 +321,6 @@ export function clearPendingRevocation(target?: PendingRevocation): boolean {
       store.setItem(PENDING_REVOCATION_STORAGE_KEY, serialized);
     }
     volatilePendingRevocations = remaining;
-    return true;
   } catch (error) {
     throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
   }

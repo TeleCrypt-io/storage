@@ -221,7 +221,7 @@ export function DetailsPanel({
 
       {isVaultRoot && (
         <section className="access-section">
-          <MembersPanel vaultId={treeId} embedded />
+          <MembersPanel vaultId={treeId} />
         </section>
       )}
     </aside>

@@ -27,7 +27,8 @@ vi.mock("./revokeSession", async () => {
   const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
     try {
       await revokeMatrixSession(target, undefined, signal);
-      return session.clearPendingRevocation(target) ? null : new Error("Session cleanup persistence failed");
+      session.clearPendingRevocation(target);
+      return null;
     } catch (error) {
       const recorded = session.savePendingRevocation(target);
       return new Error(
@@ -302,7 +303,7 @@ describe("beginOidcLogin stable device id", () => {
       removeItem(key);
     });
     vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
-      expect(clearPendingRevocation(target)).toBe(true);
+      clearPendingRevocation(target);
       return null;
     });
 
@@ -315,7 +316,7 @@ describe("beginOidcLogin stable device id", () => {
     const pending = { homeserver: getRuntimeSettings().homeserver, accessToken: "old-access" };
     sessionStorage.setItem("telecrypt-io-ui:pending-revocation", JSON.stringify([pending]));
     vi.mocked(revocation.revokeOrRemember).mockImplementationOnce(async (target) => {
-      expect(clearPendingRevocation(target)).toBe(true);
+      clearPendingRevocation(target);
       controller.abort();
       return null;
     });
@@ -379,7 +380,7 @@ describe("beginOidcLogin stable device id", () => {
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
   });
 
-  it("revokes a callback token when tab session cleanup cannot be persisted", async () => {
+  it("rejects unavailable session storage before exchanging a callback", async () => {
     callback("?code=one&state=two");
     vi.mocked(core.completeAuthorizationCodeFlow).mockResolvedValue({
       homeserverUrl: getRuntimeSettings().homeserver,
@@ -417,6 +418,35 @@ describe("beginOidcLogin stable device id", () => {
         value: original,
       });
     }
+  });
+
+  it("revokes the issued token when local cleanup fails after exchange", async () => {
+    callback("?code=one&state=two");
+    vi.mocked(core.completeAuthorizationCodeFlow).mockImplementation(async () => {
+      const removeItem = sessionStorage.removeItem.bind(sessionStorage);
+      vi.spyOn(sessionStorage, "removeItem").mockImplementation((key) => {
+        if (key === "telecrypt-io-ui:session") throw new Error("session removal denied");
+        removeItem(key);
+      });
+      return {
+        homeserverUrl: getRuntimeSettings().homeserver,
+        oidcClientSettings: { issuer: METADATA.issuer, clientId: "client-123" },
+        tokenResponse: {
+          access_token: "issued-access",
+          refresh_token: "issued-refresh",
+          scope: "urn:matrix:client:device:DEVICE1234",
+        },
+      } as never;
+    });
+
+    await expect(completeOidcLoginFromCallback()).rejects.toThrow("Session persistence failed");
+    expect(core.completeAuthorizationCodeFlow).toHaveBeenCalledOnce();
+    expect(core.whoAmI).not.toHaveBeenCalled();
+    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith(
+      { homeserver: getRuntimeSettings().homeserver, accessToken: "issued-access" },
+      undefined,
+      undefined,
+    );
   });
 
   it("revokes a newly issued token when callback identity validation fails", async () => {
