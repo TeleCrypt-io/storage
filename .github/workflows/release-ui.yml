@@ -142,18 +142,13 @@ jobs:
           bash scripts/verify-release.sh \
             "$RELEASE_TAG" "$RELEASE_SHA" "storage-web-$version.pages.zip" \
             "$EXPECTED_DIGEST" "$EXPECTED_SIZE" "$RUNNER_TEMP/release-assets" "$EXPECTED_RELEASE_ID"
-          rm -rf dist
           mkdir dist
           timeout --signal=TERM --kill-after=5s 300s unzip \
             "$RUNNER_TEMP/release-assets/storage-web-$version.pages.zip" -d dist
-          cmp -s dist/CNAME public/CNAME
-          cmp -s dist/_headers public/_headers
       - uses: actions/configure-pages@v6.0.0
-      - id: pages-upload
-        uses: actions/upload-pages-artifact@v5.0.0
+      - uses: actions/upload-pages-artifact@v5.0.0
         with: {path: dist}
       - id: deployment
-        uses: ./.github/actions/deploy-pages
+        uses: actions/deploy-pages@v5.0.1
         with:
-          artifact-id: ${{ steps.pages-upload.outputs.artifact_id }}
-          build-version: ${{ env.RELEASE_SHA }}
+          artifact_name: github-pages

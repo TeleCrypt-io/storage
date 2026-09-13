@@ -80,7 +80,8 @@ Pushes and pull requests to `main` only verify the source. An annotated
 package version, installs dependencies, runs tests and lint, builds the site, and publishes one immutable
 Release archive. An owner-authorized production promotion dispatches the workflow at that exact tag,
 rebuilds the tagged source, verifies the published archive's GitHub digest and size, and deploys those
-archive bytes. The workflow does not edit an existing Release. The source is environment-neutral, and
+archive bytes through GitHub's Pages upload and deploy actions. The workflow does not edit an existing
+Release. The source is environment-neutral, and
 the browser derives its backend from the canonical site hostname. VM activation and acceptance follow
 the operator-managed Harness deployment contract.
 
