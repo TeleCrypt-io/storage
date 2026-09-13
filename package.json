@@ -1,7 +1,7 @@
 {
   "name": "@telecrypt-io/storage-web",
   "private": true,
-  "version": "0.4.22",
+  "version": "0.4.23",
   "license": "BUSL-1.1",
   "packageManager": "npm@11.19.0",
   "engines": {
@@ -18,7 +18,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@telecrypt-io/storage": "0.7.0",
+    "@telecrypt-io/storage": "0.7.1",
     "buffer": "6.0.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
