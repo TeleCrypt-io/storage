@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import "./App.css";
 import { StorageProvider, useStorage } from "./context/StorageContext";
 import { LoginScreen } from "./components/LoginScreen";
+import { BrandMark } from "./components/BrandMark";
 import { formatElapsed } from "./lib/formatElapsed";
 
 const FileManager = lazy(async () => ({ default: (await import("./components/FileManager")).FileManager }));
@@ -69,7 +70,10 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">TeleCrypt Storage</span>
+        <span className="brand">
+          <BrandMark />
+          <span>TeleCrypt Storage</span>
+        </span>
         <span className="user muted" data-testid="current-user">
           {session?.userId}
         </span>

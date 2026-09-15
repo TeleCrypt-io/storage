@@ -17,10 +17,9 @@ repositories.
 ## Security boundaries
 
 The web client uses MAS/OIDC authorization-code + PKCE only; it never collects or sends a Matrix
-login password. GitHub Pages cannot set response headers, so `index.html` provides an
-early CSP meta policy as a baseline. A header CSP remains required when the static site moves behind
-a header-capable edge. Vite relaxes only `connect-src` for its development server so the disposable
-localhost MAS/Synapse fixture remains usable. The page hostname is validated before the UI renders
+login password. The Vite build generates the CSP meta policy in `index.html` and the `_headers` file
+used by Cloudflare Pages from one policy definition. Vite relaxes only `connect-src` for its
+development server so the disposable localhost MAS/Synapse fixture remains usable. The page hostname is validated before the UI renders
 and derives the canonical HTTPS TeleCrypt backend URL (`storage.telecrypt.io` maps to
 `backend.telecrypt.io`; `storage.stage.telecrypt.io` maps to
 `backend.stage.telecrypt.io`). The OIDC issuer
@@ -43,14 +42,21 @@ a commit that has already passed the repository checks and is identified by a pu
 name alone is never sufficient deployment evidence. Cloudflare Pages stage must emit exactly one response
 `Content-Security-Policy` header containing the full site policy plus `frame-ancestors 'none'`, and
 exactly one `X-Frame-Options: DENY` header on every response. This is a stage acceptance requirement;
-GitHub Pages production cannot emit response headers and uses the HTML meta policy as its browser
-baseline. The checked-in `public/_headers` file records the stage contract.
+GitHub Pages production cannot emit response headers and uses the generated HTML meta policy as its
+browser baseline. The generated `dist/_headers` file records the stage contract.
 
-## Shared UI vendor baseline
+## Shared product assets
 
-`src/vendor/telecrypt-ui/product.css` is a byte-identical copy of the
-[TeleCrypt shared UI source](https://github.com/TeleCrypt-io/www.telecrypt.io/blob/68c1856760151c2d78dbdc4e56d9953a1356c53b/shared/ui/product.css).
-`src/theme.css` imports it directly, so the website has no runtime stylesheet package dependency.
+Storage loads the shared product stylesheet, logo and favicon from the canonical public website:
+
+- [Product stylesheet](https://www.telecrypt.io/ui/product.css)
+- [Logo](https://www.telecrypt.io/logo-mark.png)
+- [Favicon](https://www.telecrypt.io/favicon-32x32.png)
+
+These stable URLs are deliberately shared with Controlplane’s Plan page. The landing website keeps
+its own independent design. Shared asset changes take effect as browsers and the public edge refresh
+their normal caches, so the Storage and Plan applications should be checked together after a style
+change. Application releases remain self-contained for their code and backend behavior.
 
 ## Development and checks
 
