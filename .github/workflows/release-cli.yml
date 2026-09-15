@@ -1,0 +1,80 @@
+name: Release storage CLI
+
+on:
+  push:
+    tags: ["storage-cli-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: storage-cli-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Verify annotated release source
+        run: bash cli/scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA"
+
+      - name: Verify release version
+        working-directory: cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm_version="$(node -p 'require("./package.json").packageManager.replace(/^npm@/u, "")')"
+          test "$(npm --version)" = "$npm_version"
+          version="${RELEASE_TAG#storage-cli-v}"
+          test "$version" = "$(node -p 'require("./package.json").version')"
+          test "$version" = "$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).packages[""].version')"
+
+      - name: Install, test, and build
+        working-directory: cli
+        run: |
+          npm ci --ignore-scripts --no-fund --no-audit
+          npm run lint
+          npm run test:unit
+          npm run build
+
+      - name: Add bundled dependency notices and package the CLI
+        working-directory: cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#storage-cli-v}"
+          mkdir -p release
+          node scripts/generateThirdPartyLicenses.mjs package-lock.json node_modules THIRD-PARTY-LICENSES.txt
+          npm pack --ignore-scripts --pack-destination release
+          archive="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$archive"
+          mv "$archive" "release/storage-cli-v${version}.tgz"
+          bash scripts/verify-package.sh "release/storage-cli-v${version}.tgz" "$version"
+          size="$(wc -c <"release/storage-cli-v${version}.tgz")"
+          digest="sha256:$(sha256sum "release/storage-cli-v${version}.tgz" | awk '{print $1}')"
+          printf 'CLI_ASSET=storage-cli-v%s.tgz\nCLI_SIZE=%s\nCLI_DIGEST=%s\n' "$version" "$size" "$digest" >> "$GITHUB_ENV"
+
+      - name: Publish the GitHub Release
+        run: gh release create "$RELEASE_TAG" "cli/release/$CLI_ASSET" --verify-tag --target "$RELEASE_SHA" --generate-notes
+
+      - name: Verify and download the immutable Release archive
+        run: |
+          set -euo pipefail
+          bash cli/scripts/verify-release.sh "$RELEASE_TAG" "$RELEASE_SHA" "$CLI_ASSET" "$CLI_DIGEST" "$CLI_SIZE" "$RUNNER_TEMP/cli-release"
+          cmp "cli/release/$CLI_ASSET" "$RUNNER_TEMP/cli-release/$CLI_ASSET"

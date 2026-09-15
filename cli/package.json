@@ -1,0 +1,59 @@
+{
+  "name": "@telecrypt-io/storage-cli",
+  "version": "0.4.16",
+  "private": true,
+  "license": "BUSL-1.1",
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "main": "dist/index.js",
+  "bin": {
+    "telecrypt-io": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CLI.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES.txt"
+  ],
+  "bundleDependencies": [
+    "@telecrypt-io/storage",
+    "commander",
+    "fake-indexeddb",
+    "matrix-js-sdk"
+  ],
+  "engines": {
+    "node": ">=24.20.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src test --ext .ts",
+    "test": "vitest run",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@telecrypt-io/storage": "0.7.1",
+    "commander": "15.0.0",
+    "fake-indexeddb": "6.2.5",
+    "matrix-js-sdk": "42.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@typescript-eslint/eslint-plugin": "8.67.0",
+    "@typescript-eslint/parser": "8.67.0",
+    "eslint": "10.9.0",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TeleCrypt-io/storage.telecrypt.io.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/TeleCrypt-io/storage.telecrypt.io/tree/main/cli#readme",
+  "bugs": {
+    "url": "https://github.com/TeleCrypt-io/storage.telecrypt.io/issues"
+  }
+}

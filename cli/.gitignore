@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+THIRD-PARTY-LICENSES.txt
+*.log
+
+# Playwright output (traces/videos on failed prod-smoke runs)
+test-results/

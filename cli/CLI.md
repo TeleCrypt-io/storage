@@ -1,0 +1,160 @@
+# `telecrypt-io` CLI
+
+A terminal CLI over the `TeleCryptIOStorage` library: log in, set up recovery, create shared
+vaults, invite participants, and upload/download end-to-end encrypted files — all driven
+entirely by the library (this CLI does not reimplement crypto or Matrix logic). All commands live
+under the `storage` namespace (`telecrypt-io storage ...`).
+
+Crypto state is persisted in the selected profile so separate CLI processes can reopen the same
+encrypted session. `TELECRYPT_IO_STORAGE_HOME`, when set, must be an existing or creatable
+absolute path (it is resolved before use).
+
+The CLI requires Linux and Node.js `>=24.20.0`. Release verification
+uses that exact Node.js version and the bundled npm `11.19.0`.
+
+## Setup
+
+```sh
+npm ci --ignore-scripts
+```
+
+During development, run commands via `tsx` directly instead of building:
+
+```sh
+npm exec --ignore-scripts -- tsx src/index.ts storage <command> [args] [--json]
+```
+
+## Profile / state
+
+Every command reads/writes a **profile directory**: an OIDC session (homeserver, userId, deviceId,
+issuer and token metadata, access/refresh tokens) and the crypto store snapshot. Default `~/.telecrypt-io/storage`; override
+with `TELECRYPT_IO_STORAGE_HOME` for independent accounts/devices. When set, that variable must be
+an absolute path. The profile directory and private state files read by the CLI must be owned by the
+current user, regular files (not symlinks), and inaccessible to group and other users; the CLI
+refuses unsafe state rather than trying to repair it.
+Commands hold an exclusive profile lock for their full lifetime, serializing ordinary concurrent
+commands that use the same profile directory. A failed local cleanup after a successful
+remote logout leaves a private retry marker; rerunning logout completes cleanup without reusing the
+revoked token.
+The persisted device ID is required and is passed back into the shared refresh adapter, binding every
+refreshed OAuth scope to the Matrix device that owns this profile; a missing device identity is rejected
+before storage opens.
+Issuer and token endpoint metadata are also required and are checked against the trusted homeserver and
+issuer path before refresh or logout. Profiles written by older CLI releases without the issuer binding
+are rejected and must be logged in again; the CLI never guesses missing OIDC authority.
+The profile is protected by filesystem ownership and mode checks. A same-user process with write
+access is inside the trust boundary and must not replace the profile directory while a command is
+running. Writes are atomic, and the command-wide lock prevents ordinary simultaneous CLI commands
+from replacing one another's session state. Bearer tokens
+and cryptographic state are not wrapped in an additional application-level at-rest encryption layer.
+
+```sh
+TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-alice" telecrypt-io storage login --homeserver https://backend.telecrypt.io
+TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-bob"   telecrypt-io storage login --homeserver https://backend.telecrypt.io
+```
+
+## `--json`
+
+Every command accepts `--json` (anywhere on the command line): machine-readable output on
+stdout on success, or a final `{"error": "..."}` line on stderr with a non-zero exit code on
+failure. Without `--json`, commands print human-readable text instead. SDK and command-parser
+diagnostic logs are also preserved on stderr, including nonempty warnings from successful internal
+checks, and may accompany the final error line; they never corrupt successful machine-readable
+stdout. Failure diagnostics retain complete secret-safe exception names, messages, causes,
+aggregate children, and stacks without truncation.
+
+## Commands
+
+### Session
+
+```sh
+telecrypt-io storage login --homeserver <url>
+telecrypt-io storage login --homeserver <url> --no-browser
+telecrypt-io storage whoami
+telecrypt-io storage logout
+```
+
+Login opens the verification page through the system browser by default. Use `--no-browser` on
+headless or remotely operated machines; the verification URL and code are still printed.
+
+Logout revokes the server session before removing local credentials. If the server cannot be
+reached or rejects the request, the profile is retained so logout can be retried.
+
+### Recovery (server-side key backup)
+
+```sh
+telecrypt-io storage recovery setup                  # prints the Recovery Key — save it, it's shown once
+telecrypt-io storage recovery restore                 # hidden Recovery Key prompt
+printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin
+```
+
+### Vaults
+
+```sh
+telecrypt-io storage vault create <name>
+telecrypt-io storage vault list
+telecrypt-io storage vault subfolder create <parentId> <name>
+telecrypt-io storage vault subfolder list <parentId>
+telecrypt-io storage vault subfolder rename <folderId> <name>
+telecrypt-io storage vault subfolder delete <folderId>
+telecrypt-io storage vault share <vaultId> <userId> [--role viewer|editor]   # default: viewer
+telecrypt-io storage vault join <vaultId>            # accept a pending invite
+telecrypt-io storage vault members <vaultId>         # participants + roles
+telecrypt-io storage vault unshare <vaultId> <userId>
+telecrypt-io storage vault rename <vaultId> <name>
+telecrypt-io storage vault delete <vaultId>
+```
+
+`vault share` can also be re-run against an existing participant to change their role. The
+`subfolder` commands manage nested directory nodes within a vault.
+
+### Files
+
+```sh
+telecrypt-io storage file upload <treeId> <path> [--name <name>]
+telecrypt-io storage file list <treeId>
+telecrypt-io storage file download <treeId> <fileId> <destPath>
+telecrypt-io storage file rename <treeId> <fileId> <name>
+telecrypt-io storage file delete <treeId> <fileId>
+```
+
+Delete files before deleting their containing folder or vault. Folder and vault deletion refuses
+nonempty trees, including child folders; remove empty child folders explicitly first.
+
+File uploads are limited to 128 MiB. Downloads use an atomic temporary file and refuse to replace an
+existing destination. Download bytes are held in memory and kept inside the command's 120-second
+cancellation boundary before installation.
+
+## Example: two participants sharing a vault
+
+```sh
+export A=~/.telecrypt-io/storage-alice
+export B=~/.telecrypt-io/storage-bob
+
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+
+VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
+
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --role editor --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage vault join "$VAULT_ID" --json
+
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file upload "$VAULT_ID" ./report.pdf --json
+# { "id": "$...", "name": "report.pdf", "mimetype": "application/pdf" }
+
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file list "$VAULT_ID" --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file download "$VAULT_ID" '$...' ./report-downloaded.pdf --json
+```
+
+## Example: recovery on a new device
+
+```sh
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
+# { "recoveryKey": "EsTx ...." }  -- save this
+
+# Later, on a fresh profile (new device, same account):
+export A2=~/.telecrypt-io/storage-alice-newlaptop
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$VAULT_ID" '$...' ./recovered.pdf --json
+```

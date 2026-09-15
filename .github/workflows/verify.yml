@@ -3,8 +3,10 @@ name: Verify storage site
 on:
   push:
     branches: ["main"]
+    paths-ignore: ["cli/**"]
   pull_request:
     branches: ["main"]
+    paths-ignore: ["cli/**"]
 
 permissions:
   contents: read

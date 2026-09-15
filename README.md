@@ -4,15 +4,16 @@ The static React/Vite site served at [storage.telecrypt.io](https://storage.tele
 Current TeleCrypt project facts and product decisions are maintained only in the canonical
 [`llms.txt`](https://www.telecrypt.io/llms.txt); this README documents this website implementation.
 It consumes the browser SDK version pinned in `package.json` and `package-lock.json`, installed
-with `npm ci`.
-Storage protocol, cryptography, and the command-line client deliberately live in their own
-repositories.
+with `npm ci`. The command-line client is maintained in the isolated [`cli/`](./cli/) package.
 
 ## Source boundaries
 
 - [`storage-sdk`](https://github.com/TeleCrypt-io/storage-sdk) owns the library source and package releases.
-- [`storage-cli`](https://github.com/TeleCrypt-io/storage-cli) owns the command-line client.
-- This repository owns only the static website, its UI tests, and its GitHub Pages deployment.
+- [`cli/`](./cli/) owns the command-line client, its tests, and its exact GitHub Release archive.
+- This repository owns the static website, its UI tests, and the workflows for both isolated packages.
+
+The Web and CLI packages have separate `package.json` and lockfiles. Run each package's checks from
+its directory; root Web commands never discover or lint CLI source.
 
 ## Security boundaries
 
@@ -68,6 +69,16 @@ npm test          # component/wiring tests; no browser Harness execution in CI
 npm run build
 ```
 
+The CLI has its own checks:
+
+```
+cd cli
+npm ci --ignore-scripts --no-fund --no-audit
+npm run lint
+npm run test:unit
+npm run build
+```
+
 Browser acceptance tooling is operator-local Harness work, never a GitHub Actions job. Its real
 browser suite expects the shared disposable Synapse/MAS fixture to be running on localhost before
 `npm run e2e`; this repository does not carry or duplicate that fixture. Component tests may mock
@@ -90,6 +101,12 @@ archive bytes through GitHub's Pages upload and deploy actions. The workflow doe
 Release. The source is environment-neutral, and
 the browser derives its backend from the canonical site hostname. VM activation and acceptance follow
 the operator-managed Harness deployment contract.
+
+An annotated `storage-cli-v<major>.<minor>.<patch>` tag runs the isolated CLI release workflow. It
+checks `cli/` against the tag, installs its lockfile, runs lint, unit tests, and the build, generates
+the bundled dependency notice, packages one archive, and verifies the immutable GitHub Release
+asset. CLI release archives are installed directly from that GitHub Release; they are not published
+to the NPM registry.
 
 ## License
 
