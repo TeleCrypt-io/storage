@@ -8,7 +8,7 @@ test "$(basename "$archive")" = "storage-cli-v${version}.tgz"
 
 for required in package/package.json package/dist/index.js package/README.md package/CLI.md \
   package/LICENSE package/THIRD-PARTY-LICENSES.txt; do
-  tar -tzf "$archive" | grep -Fxq "$required"
+  tar -tzf "$archive" | grep -Fx "$required" >/dev/null
 done
 
 EXPECTED_VERSION="$version" node -e '
