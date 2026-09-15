@@ -59,6 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#storage-cli-v}"
+          cp ../LICENSE LICENSE
           mkdir -p release
           node scripts/generateThirdPartyLicenses.mjs package-lock.json node_modules THIRD-PARTY-LICENSES.txt
           npm pack --ignore-scripts --pack-destination release

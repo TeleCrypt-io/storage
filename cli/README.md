@@ -60,8 +60,9 @@ GitHub Release procedure.
 
 ## Licence
 
-[Business Source License 1.1](./LICENSE). Non-commercial use is permitted; converts to
-Apache License 2.0 on 2030-07-20.
+The packaged release contains the [Business Source License 1.1](./LICENSE). In the source
+repository, the authoritative copy is the [root license](../LICENSE). Non-commercial use is
+permitted; it converts to Apache License 2.0 on 2030-07-20.
 
 For commercial licensing, contact TeleCrypt.io.
 
