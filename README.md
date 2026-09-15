@@ -2,7 +2,7 @@
 
 The static React/Vite site served at [storage.telecrypt.io](https://storage.telecrypt.io).
 Current TeleCrypt project facts and product decisions are maintained only in the canonical
-[`llms.txt`](https://telecrypt-io.github.io/llms-authority/llms.txt); this README documents this website implementation.
+[`llms.txt`](https://www.telecrypt.io/llms.txt); this README documents this website implementation.
 It consumes the browser SDK version pinned in `package.json` and `package-lock.json`, installed
 with `npm ci`.
 Storage protocol, cryptography, and the command-line client deliberately live in their own
@@ -48,8 +48,8 @@ baseline. The checked-in `public/_headers` file records the stage contract.
 
 ## Shared UI vendor baseline
 
-`src/vendor/telecrypt-ui/product.css` is copied from the
-[TeleCrypt shared UI](https://github.com/TeleCrypt-io/ui-shared-css).
+`src/vendor/telecrypt-ui/product.css` is a byte-identical copy of the
+[TeleCrypt shared UI source](https://github.com/TeleCrypt-io/www.telecrypt.io/blob/68c1856760151c2d78dbdc4e56d9953a1356c53b/shared/ui/product.css).
 `src/theme.css` imports it directly, so the website has no runtime stylesheet package dependency.
 
 ## Development and checks
