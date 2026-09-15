@@ -33,7 +33,7 @@ function ConnectingScreen() {
         Elapsed {formatElapsed(now - startedAt)}
       </p>
 
-      <ol className="connect-log" data-testid="connect-log" aria-live="polite">
+      <ol className="connect-log tc-surface" data-testid="connect-log" aria-live="polite">
         {connectLog.map((entry, i) => {
           const isLatest = i === connectLog.length - 1;
           const relative = formatElapsed(entry.at - startedAt);

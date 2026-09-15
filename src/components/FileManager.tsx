@@ -450,7 +450,7 @@ export function FileManager() {
               <li key={vault.id} data-testid="vault-item" data-vault-id={vault.id}>
                 {sidebarRenaming?.id === vault.id ? (
                   <input
-                    className="rename-input sidebar-rename"
+                    className="tc-field rename-input sidebar-rename"
                     aria-label={`Rename vault ${vault.name}`}
                     value={sidebarRenaming.name}
                     autoFocus

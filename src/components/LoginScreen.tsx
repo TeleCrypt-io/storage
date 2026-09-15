@@ -26,7 +26,7 @@ export function LoginScreen() {
             {error}
           </p>
         )}
-        <button type="button" disabled={busy} onClick={handleOidc} data-testid="oidc-login">
+        <button className="btn btn-primary" type="button" disabled={busy} onClick={handleOidc} data-testid="oidc-login">
           {busy ? "Working…" : oidcLabel}
         </button>
       </div>

@@ -592,7 +592,7 @@ export function VaultContents({
 
   return (
     <div
-      className={`vault-contents${dragOver ? " drag-over" : ""}`}
+      className={`vault-contents tc-surface${dragOver ? " drag-over" : ""}`}
       data-testid="vault-detail"
       data-vault-id={isVaultRoot ? treeId : undefined}
       data-folder-id={!isVaultRoot ? treeId : undefined}
@@ -726,7 +726,7 @@ export function VaultContents({
                   <td>
                     {renaming?.kind === "folder" && renaming.id === sub.id ? (
                       <input
-                        className="rename-input"
+                        className="tc-field rename-input"
                         aria-label={`Rename folder ${sub.name}`}
                         value={renaming.name}
                         autoFocus
@@ -815,7 +815,7 @@ export function VaultContents({
                   <td>
                     {renaming?.kind === "file" && renaming.id === f.id ? (
                       <input
-                        className="rename-input"
+                        className="tc-field rename-input"
                         aria-label={`Rename file ${f.name}`}
                         value={renaming.name}
                         autoFocus

@@ -253,6 +253,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
         <form onSubmit={handleShare} className="invite-form">
           <label htmlFor="share-user-id">Invite user</label>
           <input
+            className="tc-field"
             id="share-user-id"
             placeholder="@user:homeserver"
             value={shareUserId}
@@ -263,6 +264,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
           <div className="invite-form-row">
             <label htmlFor="share-role">Role</label>
             <select
+              className="tc-field"
               id="share-role"
               value={shareRole}
               onChange={(e) => setShareRole(e.target.value as "viewer" | "editor")}

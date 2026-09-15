@@ -266,7 +266,7 @@ export function RecoveryPanel() {
               : error ?? "Account recovery status is unavailable."}
           </p>
           {setupIndeterminate && (
-            <button type="button" onClick={() => void handleReconcile()} disabled={busy} data-testid="reconcile-recovery">
+            <button className="btn" type="button" onClick={() => void handleReconcile()} disabled={busy} data-testid="reconcile-recovery">
               {busy ? "Checking recovery status…" : "Reconcile recovery status"}
             </button>
           )}
@@ -277,7 +277,7 @@ export function RecoveryPanel() {
         <div data-testid="recovery-not-setup">
           <p>Recovery is not configured on this account. Restore with an existing Recovery Key on a new device.</p>
           <p className="muted">Only set up recovery here when this is the first trusted device for the account.</p>
-          <button onClick={handleSetup} disabled={busy} data-testid="setup-recovery">
+          <button className="btn btn-primary" onClick={handleSetup} disabled={busy} data-testid="setup-recovery">
             {busy ? "Setting up recovery…" : "Set up recovery on this device"}
           </button>
         </div>
@@ -338,6 +338,7 @@ export function RecoveryPanel() {
             <form onSubmit={handleRestore} className="restore-form">
               <label htmlFor="restore-key-textarea">Recovery Key</label>
               <textarea
+                className="tc-field"
                 id="restore-key-textarea"
                 rows={4}
                 value={restoreKeyInput}
