@@ -99,10 +99,6 @@ export function getRuntimeSettings(): RuntimeSettings {
   return loadedSettings;
 }
 
-export function runtimePublicAssetOrigin(): string {
-  return `https://www.${getRuntimeSettings().serverName}`;
-}
-
 export function runtimeOidcIssuer(): string {
   return `${getRuntimeSettings().homeserver}/auth/`;
 }

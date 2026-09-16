@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import publicAssets from "./public-assets.json" with { type: "json" };
 
 const deploymentCspPlaceholder = "__TELECRYPT_DEPLOYMENT_CSP__";
 const developmentConnectSources = ["'self'", "http://localhost:*", "ws://localhost:*"];
@@ -34,7 +35,7 @@ function securityPolicyPlugin(): Plugin {
         ? developmentConnectSources
         : ["'self'"];
       const policy = context.server
-        ? contentSecurityPolicy(connectSources).replaceAll("__TELECRYPT_PUBLIC_ASSET_ORIGIN__", "https://www.telecrypt.io")
+        ? contentSecurityPolicy(connectSources).replaceAll("__TELECRYPT_PUBLIC_ASSET_ORIGIN__", publicAssets.origin)
         : deploymentCspPlaceholder;
       return {
         html,

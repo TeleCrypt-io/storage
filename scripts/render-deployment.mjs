@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const publicAssets = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "public-assets.json"), "utf8"));
+if (typeof publicAssets.origin !== "string" || !/^https:\/\/[A-Za-z0-9.-]+$/u.test(publicAssets.origin)) {
+  throw new Error("public-assets.json has an invalid origin");
+}
 
 if (process.argv.length !== 4) {
   console.error("usage: render-deployment.mjs DIST_DIR SERVER_NAME");
@@ -14,7 +21,7 @@ if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(serverName) || serverNam
 }
 
 const backendOrigin = `https://backend.${serverName}`;
-const publicAssetOrigin = `https://www.${serverName}`;
+const publicAssetOrigin = publicAssets.origin;
 const matrixWellKnown = `https://${serverName}/.well-known/matrix/client`;
 const csp = [
   "default-src 'none'",

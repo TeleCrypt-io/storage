@@ -1,6 +1,6 @@
-import { runtimePublicAssetOrigin } from "../lib/buildConfig";
+import publicAssets from "../../public-assets.json";
 
-const BRAND_MARK_URL = `${runtimePublicAssetOrigin()}/logo-mark.png`;
+const BRAND_MARK_URL = `${publicAssets.origin}/logo-mark.png`;
 
 export function BrandMark() {
   return (

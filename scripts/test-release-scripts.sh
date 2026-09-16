@@ -153,4 +153,16 @@ test ! -e "$work/download-bad-id"
 assert_failure release_check api-fail "$release_json" "$work/download-api-failure" "$archive_digest" "$archive_size" 123
 assert_failure release_check download-fail "$release_json" "$work/download-failure" "$archive_digest" "$archive_size" 123
 
+render_dist="$work/rendered-dist"
+mkdir -p "$render_dist"
+printf '%s\n' '<meta __TELECRYPT_PUBLIC_ASSET_ORIGIN__ __TELECRYPT_DEPLOYMENT_CSP__>' >"$render_dist/index.html"
+printf '%s\n' 'Content-Security-Policy: __TELECRYPT_DEPLOYMENT_CSP__' >"$render_dist/_headers"
+assert_success node "$root/scripts/render-deployment.mjs" "$render_dist" stage.telecrypt.io
+grep -F 'https://www.telecrypt.io' "$render_dist/index.html" "$render_dist/_headers" >/dev/null
+grep -F 'https://backend.stage.telecrypt.io' "$render_dist/index.html" "$render_dist/_headers" >/dev/null
+[[ "$(<"$render_dist/config.json")" == *'"serverName": "stage.telecrypt.io"'* ]]
+[[ "$(<"$render_dist/CNAME")" == 'storage.stage.telecrypt.io' ]]
+! grep -F '__TELECRYPT_' "$render_dist/index.html" "$render_dist/_headers"
+assert_failure node "$root/scripts/render-deployment.mjs" "$render_dist" 'stage..telecrypt.io'
+
 printf 'release script checks passed\n'

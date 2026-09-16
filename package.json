@@ -1,7 +1,7 @@
 {
   "name": "@telecrypt-io/storage-web",
   "private": true,
-	"version": "0.4.25",
+	"version": "0.4.26",
   "license": "BUSL-1.1",
   "packageManager": "npm@11.19.0",
   "engines": {
@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:deployment": "npm run build && node scripts/render-deployment.mjs dist \"$SERVER_NAME\"",
     "lint": "oxlint src test",
     "preview": "vite preview",
     "test": "vitest run",
