@@ -12,18 +12,6 @@ absolute path (it is resolved before use).
 The CLI requires Linux and Node.js `>=24.20.0`. Release verification
 uses that exact Node.js version and the bundled npm `11.19.0`.
 
-## Setup
-
-```sh
-npm ci --ignore-scripts
-```
-
-During development, run commands via `tsx` directly instead of building:
-
-```sh
-npm exec --ignore-scripts -- tsx src/index.ts storage <command> [args] [--json]
-```
-
 ## Profile / state
 
 Every command reads/writes a **profile directory**: an OIDC session (homeserver, userId, deviceId,

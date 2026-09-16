@@ -2,8 +2,8 @@
 
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
-Current TeleCrypt project facts and product decisions are maintained only in the canonical
-[`www.telecrypt.io/llms.txt`](https://www.telecrypt.io/llms.txt); this README documents the CLI package and commands.
+Current TeleCrypt project facts and product decisions are maintained in the canonical
+[`www.telecrypt.io/llms.txt`](https://www.telecrypt.io/llms.txt); this README documents the CLI commands.
 
 This package is maintained in the [`storage.telecrypt.io`](https://github.com/TeleCrypt-io/storage.telecrypt.io)
 repository under `cli/`. It has an independent lockfile and release workflow so CLI checks and
@@ -14,8 +14,7 @@ version and the bundled npm `11.19.0`.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the
 `telecrypt-io storage` command group: login, recovery, shared vaults and nested folders, and file
-upload, download, rename, and deletion. Its real-stack Harness scenarios exercise these same SDK
-operations as the web UI; they are operator-local acceptance tests, never hosted CI.
+upload, download, rename, and deletion.
 
 **Distribution:** the standalone CLI is available only as an exact
 [GitHub Release](https://github.com/TeleCrypt-io/storage.telecrypt.io/releases), never from the NPM registry.
@@ -38,25 +37,7 @@ Recovery-key setup/export is a supported product feature for restoring encrypted
 device. See the [canonical CLI reference](./CLI.md) for commands, profile handling, JSON output,
 sharing, file operations, and recovery.
 
-## Development
-
-```bash
-npm ci --ignore-scripts
-npm run test:unit
-```
-
-Full Harness acceptance is local-only. Start the shared disposable Synapse/MAS fixture from a
-Storage SDK checkout, then run `npm test` from this checkout. The full suite includes the real
-fixture-backed CLI functional tests against `http://localhost:8008`; unit-only checks and mocked
-boundaries do not replace that real-stack coverage. The same Podman fixture is shared with the SDK
-and Web e2e suites. Hosted Actions never runs these scenarios and they never target a production
-server.
-
-If setup or tests fail, inspect the relevant logs, then stop the fixture with the SDK checkout's
-`npm run synapse:down` command when finished.
-
-See [CLI.md](./CLI.md) for the full command reference and [RELEASING.md](./RELEASING.md) for the
-GitHub Release procedure.
+See [CLI.md](./CLI.md) for the full command reference.
 
 ## Licence
 
