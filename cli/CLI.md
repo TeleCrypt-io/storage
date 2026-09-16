@@ -37,8 +37,8 @@ from replacing one another's session state. Bearer tokens
 and cryptographic state are not wrapped in an additional application-level at-rest encryption layer.
 
 ```sh
-TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-alice" telecrypt-io storage login --homeserver https://backend.telecrypt.io
-TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-bob"   telecrypt-io storage login --homeserver https://backend.telecrypt.io
+TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-alice" telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io
+TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-bob"   telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io
 ```
 
 ## `--json`
@@ -56,8 +56,8 @@ aggregate children, and stacks without truncation.
 ### Session
 
 ```sh
-telecrypt-io storage login --homeserver <url>
-telecrypt-io storage login --homeserver <url> --no-browser
+telecrypt-io storage login --homeserver <url> --server-name <name>
+telecrypt-io storage login --homeserver <url> --server-name <name> --no-browser
 telecrypt-io storage whoami
 telecrypt-io storage logout
 ```
@@ -119,8 +119,8 @@ cancellation boundary before installation.
 export A=~/.telecrypt-io/storage-alice
 export B=~/.telecrypt-io/storage-bob
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
 
 VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
 
@@ -142,7 +142,7 @@ TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
 
 # Later, on a fresh profile (new device, same account):
 export A2=~/.telecrypt-io/storage-alice-newlaptop
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
 printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$VAULT_ID" '$...' ./recovered.pdf --json
 ```

@@ -19,7 +19,7 @@ import {
 export { assertOidcEndpoint };
 import type { PendingSession, Session } from "./profile.js";
 import { settlePromiseWithin } from "./cancellation.js";
-import { expectedMatrixServerName } from "./topology.js";
+import { expectedMatrixServerName, isTrustedHomeserverOrigin } from "./topology.js";
 
 /** Carries the exact bearer credentials that must be revoked when a device
  * grant succeeded but the CLI could not finish identity verification or
@@ -106,9 +106,14 @@ async function withDeadline<T>(
   }
 }
 
-/** Validates the user-supplied homeserver against the supported TeleCrypt deployments. */
-export function assertTrustedHomeserver(value: unknown): string {
-  if (typeof value !== "string" || !expectedMatrixServerName(value)) {
+/** Validates the explicitly selected homeserver/server-name binding. */
+export function assertTrustedHomeserver(value: unknown, serverName?: unknown): string {
+  if (
+    typeof value !== "string" ||
+    (serverName === undefined
+      ? !isTrustedHomeserverOrigin(value)
+      : typeof serverName !== "string" || !expectedMatrixServerName(value, serverName))
+  ) {
     throw new StorageError("homeserver is not a supported TeleCrypt deployment");
   }
   return value;
@@ -176,11 +181,12 @@ export interface DeviceCodeLoginHooks {
  */
 export async function runDeviceCodeLogin(
   homeserver: string,
+  serverName: string,
   hooks: DeviceCodeLoginHooks,
   signal?: AbortSignal,
 ): Promise<Session> {
-  const trustedHomeserver = assertTrustedHomeserver(homeserver);
-  const trustedMatrixServerName = expectedMatrixServerName(trustedHomeserver)!;
+  const trustedHomeserver = assertTrustedHomeserver(homeserver, serverName);
+  const trustedMatrixServerName = serverName;
   const discoveredMetadata = await withDeadline(
     (requestSignal) => discoverOidcIssuer(trustedHomeserver, requestSignal),
     "OIDC discovery",

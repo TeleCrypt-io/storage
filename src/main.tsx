@@ -6,11 +6,12 @@ import { Buffer } from "buffer";
 
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
-import { getRuntimeSettings } from "./lib/buildConfig";
+import { getRuntimeSettings, loadRuntimeSettings } from "./lib/buildConfig";
 
 async function bootstrap(): Promise<void> {
   const root = document.getElementById("root")!;
   try {
+    await loadRuntimeSettings();
     getRuntimeSettings();
   } catch (error) {
     // Do not render a login screen or accept a saved session until the page

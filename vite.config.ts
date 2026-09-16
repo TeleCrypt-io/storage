@@ -1,15 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
-const publicAssetOrigin = "https://www.telecrypt.io";
-
-const productionConnectSources = [
-  "'self'",
-  "https://backend.telecrypt.io",
-  "https://backend.stage.telecrypt.io",
-  "https://stage.telecrypt.io/.well-known/matrix/client",
-  "https://telecrypt.io/.well-known/matrix/client",
-];
+const deploymentCspPlaceholder = "__TELECRYPT_DEPLOYMENT_CSP__";
 const developmentConnectSources = ["'self'", "http://localhost:*", "ws://localhost:*"];
 
 const baseCspDirectives = [
@@ -17,8 +9,8 @@ const baseCspDirectives = [
   "base-uri 'none'",
   "object-src 'none'",
   "script-src 'self' 'wasm-unsafe-eval'",
-  `style-src 'self' ${publicAssetOrigin}`,
-  `img-src 'self' ${publicAssetOrigin}`,
+  "style-src 'self' __TELECRYPT_PUBLIC_ASSET_ORIGIN__",
+  "img-src 'self' __TELECRYPT_PUBLIC_ASSET_ORIGIN__",
   "form-action 'self'",
 ];
 
@@ -40,8 +32,10 @@ function securityPolicyPlugin(): Plugin {
     transformIndexHtml(html: string, context: { server?: unknown }) {
       const connectSources = context.server
         ? developmentConnectSources
-        : productionConnectSources;
-      const policy = contentSecurityPolicy(connectSources);
+        : ["'self'"];
+      const policy = context.server
+        ? contentSecurityPolicy(connectSources).replaceAll("__TELECRYPT_PUBLIC_ASSET_ORIGIN__", "https://www.telecrypt.io")
+        : deploymentCspPlaceholder;
       return {
         html,
         tags: [
@@ -60,7 +54,7 @@ function securityPolicyPlugin(): Plugin {
       this.emitFile({
         type: "asset",
         fileName: "_headers",
-        source: `/*\n  Content-Security-Policy: ${contentSecurityPolicy(productionConnectSources, true)}\n  X-Frame-Options: DENY\n`,
+        source: `/*\n  Content-Security-Policy: ${deploymentCspPlaceholder}\n  X-Frame-Options: DENY\n`,
       });
     },
   };

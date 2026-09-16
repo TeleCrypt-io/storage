@@ -72,7 +72,7 @@ describe("fenced login transaction", () => {
     if (state === "crypto snapshot") fs.writeFileSync(cryptoSnapshotPath(dir), Buffer.from([1]), { mode: 0o600 });
     if (state === "logout marker") fs.writeFileSync(logoutMarkerPath(dir), "server-revoked\n", { mode: 0o600 });
 
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(/profile is not empty/);
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(/profile is not empty/);
     expect(mocks.runDeviceCodeLogin).not.toHaveBeenCalled();
     expect(() => assertFreshProfileUnlocked(dir)).toThrow(/profile is not empty/);
   });
@@ -83,9 +83,9 @@ describe("fenced login transaction", () => {
     mocks.runDeviceCodeLogin.mockReturnValue(new Promise<Session>((resolve) => { resolveLogin = resolve; }));
     mocks.initStorageForNewSession.mockResolvedValue({ close: vi.fn().mockResolvedValue(undefined) });
 
-    const first = loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() });
+    const first = loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() });
     await vi.waitFor(() => expect(mocks.runDeviceCodeLogin).toHaveBeenCalled());
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(/profile is busy/);
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(/profile is busy/);
     resolveLogin(SESSION);
     await expect(first).resolves.toEqual(SESSION);
   });
@@ -96,7 +96,7 @@ describe("fenced login transaction", () => {
     mocks.initStorageForNewSession.mockRejectedValue(new Error("crypto initialization failed"));
     mocks.requestServerLogout.mockResolvedValue(undefined);
 
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(
       "server session was revoked",
     );
     expect(mocks.requestServerLogout).toHaveBeenCalledWith(
@@ -116,7 +116,7 @@ describe("fenced login transaction", () => {
     mocks.initStorageForNewSession.mockRejectedValue(new Error("crypto initialization failed"));
     mocks.requestServerLogout.mockRejectedValue(new Error("offline"));
 
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(
       "server session retained for retry",
     );
     expect(readSession(dir)).toEqual(SESSION);
@@ -134,7 +134,7 @@ describe("fenced login transaction", () => {
 
     let failure: unknown;
     try {
-      await loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() });
+      await loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() });
     } catch (error) {
       failure = error;
     }
@@ -162,7 +162,7 @@ describe("fenced login transaction", () => {
     });
     mocks.requestServerLogout.mockResolvedValue(undefined);
 
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(
       "server session was revoked",
     );
     expect(mocks.requestServerLogout).toHaveBeenCalledWith(
@@ -189,7 +189,7 @@ describe("fenced login transaction", () => {
     mocks.runDeviceCodeLogin.mockRejectedValue(new OidcLoginError("OIDC identity verification failed", pending));
     mocks.requestServerLogout.mockRejectedValue(new Error("offline"));
 
-    await expect(loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(loginAndInitialize(SESSION.homeserver, SESSION.matrixServerName, { onVerification: vi.fn() })).rejects.toThrow(
       "server session retained for retry",
     );
     expect(readPendingSession(dir)).toMatchObject(pending);

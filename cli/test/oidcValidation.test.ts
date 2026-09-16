@@ -63,32 +63,36 @@ describe("CLI OIDC endpoint validation", () => {
   });
 
   it("rejects a non-loopback HTTP homeserver before discovery", async () => {
-    await expect(runDeviceCodeLogin("http://accounts.example.test", { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(runDeviceCodeLogin("http://accounts.example.test", "example.test", { onVerification: vi.fn() })).rejects.toThrow(
       "homeserver is not a supported TeleCrypt deployment",
     );
     expect(core.discoverOidcIssuer).not.toHaveBeenCalled();
   });
 
-  it.each(["https://backend.telecrypt.io", "http://localhost:8008", "http://127.0.0.1:8008", "http://[::1]:8008"])(
-    "accepts only HTTPS or exact loopback homeservers: %s",
-    (homeserver) => {
-      expect(assertTrustedHomeserver(homeserver)).toBe(homeserver);
-    },
-  );
+  it.each([
+    ["https://backend.telecrypt.io", "telecrypt.io"],
+    ["https://backend.stage.telecrypt.io", "stage.telecrypt.io"],
+    ["http://localhost:8008", "localhost:8008"],
+    ["http://127.0.0.1:8008", "localhost:8008"],
+    ["http://[::1]:8008", "localhost:8008"],
+  ])("accepts an explicitly bound homeserver: %s", (homeserver, serverName) => {
+    expect(assertTrustedHomeserver(homeserver, serverName)).toBe(homeserver);
+  });
 
   it.each([
-    "https://backend.preview.telecrypt.io",
-    "https://backend-stage.telecrypt.io",
-    "https://evil.example",
-    "https://backend.telecrypt.io:443",
-  ])("rejects a homeserver outside the exact deployment allowlist: %s", (homeserver) => {
-    expect(() => assertTrustedHomeserver(homeserver)).toThrow(/supported TeleCrypt deployment/u);
+    ["https://backend.preview.telecrypt.io", "stage.telecrypt.io"],
+    ["https://backend-stage.telecrypt.io", "telecrypt.io"],
+    ["https://evil.example", "evil.example/path"],
+    ["https://backend.telecrypt.io:443", "telecrypt.io"],
+  ])("rejects a homeserver without a valid explicit binding: %s", (entry) => {
+    const [homeserver, serverName] = entry;
+    expect(() => assertTrustedHomeserver(homeserver, serverName)).toThrow(/supported TeleCrypt deployment/u);
   });
 
   it("binds a discovered issuer to the selected TeleCrypt deployment", async () => {
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata({ issuer: "https://accounts.example.test/auth/" }));
 
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() })).rejects.toThrow(
       /configured OIDC origin/u,
     );
     expect(core.registerClient).not.toHaveBeenCalled();
@@ -138,7 +142,7 @@ describe("CLI OIDC endpoint validation", () => {
     }));
     const onVerification = vi.fn();
 
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification, openBrowser: false })).resolves.toMatchObject({
+    await expect(runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification, openBrowser: false })).resolves.toMatchObject({
       userId: "@alice:telecrypt.io",
       accessToken: "access-token",
     });
@@ -155,7 +159,7 @@ describe("CLI OIDC endpoint validation", () => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         }),
       );
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
       const failure = expect(pending).rejects.toThrow("OIDC discovery timed out");
       await vi.advanceTimersByTimeAsync(30_001);
       await failure;
@@ -168,7 +172,7 @@ describe("CLI OIDC endpoint validation", () => {
   it("does not invoke a scheduled OIDC operation after cancellation wins the race", async () => {
     const controller = new AbortController();
     const discovery = vi.mocked(core.discoverOidcIssuer);
-    const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal);
+    const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }, controller.signal);
     controller.abort(new Error("cancelled before discovery starts"));
 
     await expect(pending).rejects.toThrow("OIDC operation cancelled");
@@ -189,7 +193,7 @@ describe("CLI OIDC endpoint validation", () => {
           }, { once: true });
         }),
       );
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
       const failure = expect(pending).rejects.toThrow("OIDC discovery timed out");
       await vi.advanceTimersByTimeAsync(30_010);
       await failure;
@@ -203,7 +207,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.useFakeTimers();
     try {
       vi.mocked(core.discoverOidcIssuer).mockImplementation(() => new Promise<OidcClientConfig>(() => {}));
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
       const failure = expect(pending).rejects.toThrow("OIDC discovery timed out");
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.advanceTimersByTimeAsync(5_000);
@@ -230,7 +234,7 @@ describe("CLI OIDC endpoint validation", () => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         }),
       );
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
       const failure = expect(pending).rejects.toThrow("OIDC approval timed out");
       await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
       await failure;
@@ -258,7 +262,7 @@ describe("CLI OIDC endpoint validation", () => {
         return new Promise<Awaited<ReturnType<typeof core.waitForDeviceCodeLogin>>>(() => {});
       });
 
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
       const failure = expect(pending).rejects.toThrow("OIDC approval timed out");
       await vi.advanceTimersByTimeAsync(5 * 60_000);
       await vi.advanceTimersByTimeAsync(5_000);
@@ -285,7 +289,7 @@ describe("CLI OIDC endpoint validation", () => {
       }),
     );
     const controller = new AbortController();
-    const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal);
+    const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }, controller.signal);
     await vi.waitFor(() => expect(core.waitForDeviceCodeLogin).toHaveBeenCalled());
     controller.abort(new Error("cancelled by test"));
     await expect(pending).rejects.toThrow("OIDC operation cancelled");
@@ -307,7 +311,7 @@ describe("CLI OIDC endpoint validation", () => {
       new Promise((resolve) => { resolveApproval = resolve; }),
     );
     const controller = new AbortController();
-    const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal);
+    const pending = runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }, controller.signal);
     await vi.waitFor(() => expect(core.waitForDeviceCodeLogin).toHaveBeenCalled());
     controller.abort(new Error("cancelled by test"));
     resolveApproval({ access_token: "late-access", refresh_token: "late-refresh", token_type: "Bearer" });
@@ -326,7 +330,7 @@ describe("CLI OIDC endpoint validation", () => {
     controller.abort(new Error("cancelled before login"));
 
     await expect(
-      runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal),
+      runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }, controller.signal),
     ).rejects.toThrow("OIDC operation cancelled");
     expect(core.discoverOidcIssuer).not.toHaveBeenCalled();
   });
@@ -346,7 +350,7 @@ describe("CLI OIDC endpoint validation", () => {
       error_description: "provider-controlled detail",
     });
 
-    const error = await runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }).catch((err: unknown) => err);
+    const error = await runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
     expect(message).toContain("invalid_grant");
@@ -366,7 +370,7 @@ describe("CLI OIDC endpoint validation", () => {
     const poll = vi.mocked(core.waitForDeviceCodeLogin);
 
     await expect(
-      runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }),
+      runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }),
     ).rejects.toThrow(/configured OIDC origin/);
     expect(start).toHaveBeenCalled();
     expect(poll).not.toHaveBeenCalled();
@@ -395,7 +399,7 @@ describe("CLI OIDC endpoint validation", () => {
       return { userId: "@alice:telecrypt.io", deviceId: requestedDeviceId };
     });
 
-    const session = await runDeviceCodeLogin(HOMESERVER, { onVerification: verification });
+    const session = await runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: verification });
 
     expect(session).toMatchObject({
       homeserver: HOMESERVER,
@@ -440,7 +444,7 @@ describe("CLI OIDC endpoint validation", () => {
       deviceId: vi.mocked(core.startDeviceCodeLogin).mock.calls.at(-1)?.[2] ?? null,
     }));
 
-    await runDeviceCodeLogin(stageHomeserver, { onVerification: vi.fn(), openBrowser: false });
+    await runDeviceCodeLogin(stageHomeserver, "stage.telecrypt.io", { onVerification: vi.fn(), openBrowser: false });
 
     expect(core.whoAmI).toHaveBeenCalledWith(
       stageHomeserver,
@@ -469,7 +473,7 @@ describe("CLI OIDC endpoint validation", () => {
       throw new Error("identity request interrupted");
     });
 
-    const error = await runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal).catch((value: unknown) => value);
+    const error = await runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }, controller.signal).catch((value: unknown) => value);
     expect(error).toBeInstanceOf(OidcLoginError);
     expect((error as OidcLoginError).pendingSession).toMatchObject({
       accessToken: "access-token",
@@ -496,7 +500,7 @@ describe("CLI OIDC endpoint validation", () => {
     });
     vi.mocked(core.whoAmI).mockResolvedValue({ userId: "@alice:telecrypt.io", deviceId: null });
 
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() })).rejects.toThrow(
+    await expect(runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() })).rejects.toThrow(
       "OIDC identity verification failed",
     );
   });
@@ -521,7 +525,7 @@ describe("CLI OIDC endpoint validation", () => {
 
     let failure: unknown;
     try {
-      await runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+      await runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() });
     } catch (error) {
       failure = error;
     }

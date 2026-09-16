@@ -87,7 +87,7 @@ function isValidSession(value: unknown): value is Session {
     isNonEmptyString(session.homeserver) &&
     isMatrixUserId(session.userId, session.matrixServerName) &&
     isOpaqueValue(session.matrixServerName) &&
-    expectedMatrixServerName(session.homeserver) === session.matrixServerName &&
+    expectedMatrixServerName(session.homeserver, session.matrixServerName) === session.matrixServerName &&
     isMatrixDeviceId(session.deviceId) &&
     isOpaqueValue(session.accessToken) &&
     isPersistedOidcBinding(session.oidcIssuer, session.homeserver) &&
@@ -117,7 +117,7 @@ export function isValidPendingSession(value: unknown): value is PendingSession {
     (pending.oidcRevocationEndpoint === undefined ||
       isPersistedOidcBinding(pending.oidcRevocationEndpoint, pending.homeserver, pending.oidcIssuer)) &&
     isNonEmptyString(pending.matrixServerName) &&
-    expectedMatrixServerName(pending.homeserver) === pending.matrixServerName &&
+    expectedMatrixServerName(pending.homeserver, pending.matrixServerName) === pending.matrixServerName &&
     (pending.userId === undefined ||
       (isMatrixUserId(pending.userId, pending.matrixServerName) &&
         isOpaqueValue(pending.matrixServerName)))

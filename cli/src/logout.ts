@@ -84,6 +84,7 @@ function safeLogoutRequestFailure(error: unknown): StorageError {
 
 interface LogoutCredentials {
   homeserver: string;
+  matrixServerName?: string;
   accessToken: string;
   oidcIssuer: string;
   refreshToken?: string;
@@ -140,7 +141,7 @@ export async function requestServerLogout(
     throw new StorageError("server logout token is invalid");
   }
 
-  const trustedHomeserver = assertTrustedHomeserver(session.homeserver);
+  const trustedHomeserver = assertTrustedHomeserver(session.homeserver, session.matrixServerName);
   const issuer = new URL(assertOidcEndpoint(session.oidcIssuer, trustedHomeserver, "OIDC issuer"));
   const revocationEndpoint = session.oidcRevocationEndpoint !== undefined
     ? assertOidcEndpoint(

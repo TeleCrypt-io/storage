@@ -10,7 +10,7 @@ dist_dir="$1"
 output_zip="$2"
 source_date_epoch="$3"
 [[ -d "$dist_dir" && "$source_date_epoch" =~ ^[0-9]+$ ]]
-for required in index.html CNAME _headers; do
+for required in index.html CNAME _headers config.json; do
   test -f "$dist_dir/$required"
 done
 

@@ -1,3 +1,4 @@
+import { MAX_MATRIX_IDENTIFIER_BYTES, validateCanonicalMatrixUserId, validateMatrixDeviceId } from "./core";
 import { getRuntimeSettings } from "./buildConfig";
 
 /**
@@ -33,7 +34,7 @@ export const SESSION_STORAGE_UNAVAILABLE = "Browser session storage is unavailab
 export const SESSION_CLEANUP_PENDING_ERROR = "Session cleanup is pending";
 export const SESSION_CLEANUP_PERSISTENCE_ERROR = "Session cleanup could not be persisted";
 export const OIDC_LOGIN_INTENT_STORAGE_KEY = "telecrypt-io-ui:oidc-login-intent";
-export const MAX_MATRIX_ID_BYTES = 255;
+export const MAX_MATRIX_ID_BYTES = MAX_MATRIX_IDENTIFIER_BYTES;
 const OIDC_STATE_STORAGE_PREFIXES = ["mx_oidc_", "telecrypt:oauth2:pkce:v1:"];
 
 export interface OidcLoginIntent {
@@ -80,10 +81,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
-
 function isOpaqueString(value: unknown): value is string {
   return isNonEmptyString(value) && !/[\s\u0000-\u001f\u007f]/u.test(value);
 }
@@ -92,26 +89,27 @@ export function isSessionToken(value: unknown): value is string {
   return isOpaqueString(value);
 }
 
-function isMatrixUserId(value: string, expectedServerName: string): boolean {
-  if (utf8ByteLength(value) > MAX_MATRIX_ID_BYTES || !value.startsWith("@")) return false;
-  const separator = value.indexOf(":", 1);
-  const serverNamePattern = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::\d{1,5})?$/u;
-  return (
-    separator > 1 &&
-    separator < value.length - 1 &&
-    /^[A-Za-z0-9._=+\-/]+$/u.test(value.slice(1, separator)) &&
-    serverNamePattern.test(value.slice(separator + 1)) &&
-    value.slice(separator + 1).toLowerCase() === expectedServerName.toLowerCase()
-  );
+function isMatrixUserId(value: unknown, expectedServerName: string): value is string {
+  try {
+    validateCanonicalMatrixUserId(value, expectedServerName);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isRuntimeMatrixUserId(value: unknown): value is string {
   const { serverName } = getRuntimeSettings();
-  return typeof value === "string" && isMatrixUserId(value, serverName);
+  return isMatrixUserId(value, serverName);
 }
 
 export function isRuntimeMatrixDeviceId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9._~-]+$/u.test(value);
+  try {
+    validateMatrixDeviceId(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function matchesRuntimeHomeserver(value: string): boolean {

@@ -1,20 +1,4 @@
-/**
- * The only Matrix homeserver identities supported by the CLI. Keep this
- * topology finite: a user-provided HTTPS hostname must never become an
- * implicit bearer-token destination.
- */
-export const TELECRYPT_HOMESERVERS = Object.freeze({
-  production: Object.freeze({
-    hostname: "backend.telecrypt.io",
-    homeserver: "https://backend.telecrypt.io",
-    serverName: "telecrypt.io",
-  }),
-  stage: Object.freeze({
-    hostname: "backend.stage.telecrypt.io",
-    homeserver: "https://backend.stage.telecrypt.io",
-    serverName: "stage.telecrypt.io",
-  }),
-});
+import { validateCanonicalMatrixUserId } from "@telecrypt-io/storage/core";
 
 export const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 export const LOCAL_HOMESERVER_SERVER_NAME = "localhost:8008";
@@ -23,13 +7,12 @@ export function isExactLoopbackHost(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(hostname);
 }
 
-/** Returns the independently trusted Matrix server name for a supported URL. */
-export function expectedMatrixServerName(homeserver: string): string | null {
+export function isTrustedHomeserverOrigin(homeserver: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(homeserver);
   } catch {
-    return null;
+    return false;
   }
   if (
     parsed.username !== "" ||
@@ -38,15 +21,23 @@ export function expectedMatrixServerName(homeserver: string): string | null {
     parsed.hash !== "" ||
     parsed.pathname !== "/" ||
     (homeserver !== parsed.origin && homeserver !== `${parsed.origin}/`)
-  ) {
+  ) return false;
+  if (isExactLoopbackHost(parsed.hostname)) return parsed.protocol === "http:";
+  return parsed.protocol === "https:" && parsed.port === "";
+}
+
+/** Validate an explicitly selected homeserver/server-name binding. */
+export function expectedMatrixServerName(homeserver: string, serverName: string): string | null {
+  try {
+    validateCanonicalMatrixUserId(`@config:${serverName}`, serverName);
+  } catch {
     return null;
   }
+  let parsed: URL;
+  try { parsed = new URL(homeserver); } catch { return null; }
+  if (!isTrustedHomeserverOrigin(homeserver)) return null;
   if (isExactLoopbackHost(parsed.hostname)) {
-    return parsed.protocol === "http:" ? LOCAL_HOMESERVER_SERVER_NAME : null;
+    return parsed.protocol === "http:" && serverName === LOCAL_HOMESERVER_SERVER_NAME ? serverName : null;
   }
-  if (parsed.protocol !== "https:" || parsed.port !== "") return null;
-  for (const profile of Object.values(TELECRYPT_HOMESERVERS)) {
-    if (parsed.hostname === profile.hostname) return profile.serverName;
-  }
-  return null;
+  return parsed.protocol === "https:" && parsed.port === "" ? serverName : null;
 }

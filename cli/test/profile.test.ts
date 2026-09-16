@@ -74,16 +74,15 @@ describe("secret-bearing CLI profile state", () => {
     expect(() => configuredProfileDir()).toThrow(/non-root absolute/u);
   });
 
-  it("binds only supported homeservers to the TeleCrypt topology", () => {
-    expect(expectedMatrixServerName("https://backend.telecrypt.io")).toBe("telecrypt.io");
-    expect(expectedMatrixServerName("https://backend.stage.telecrypt.io")).toBe("stage.telecrypt.io");
-    expect(expectedMatrixServerName("https://backend.preview.telecrypt.io")).toBeNull();
-    expect(expectedMatrixServerName("https://backend-stage.telecrypt.io")).toBeNull();
-    expect(expectedMatrixServerName("https://backend.telecrypt.io:443")).toBeNull();
-    expect(expectedMatrixServerName("https://backend.telecrypt.io/path")).toBeNull();
-    expect(expectedMatrixServerName("http://localhost:8008")).toBe("localhost:8008");
-    expect(expectedMatrixServerName("http://localhost:8008/"))
-      .toBe("localhost:8008");
+  it("binds only explicitly selected homeserver/server-name pairs", () => {
+    expect(expectedMatrixServerName("https://backend.telecrypt.io", "telecrypt.io")).toBe("telecrypt.io");
+    expect(expectedMatrixServerName("https://backend.stage.telecrypt.io", "stage.telecrypt.io")).toBe("stage.telecrypt.io");
+    expect(expectedMatrixServerName("https://backend.preview.telecrypt.io", "preview.telecrypt.io")).toBe("preview.telecrypt.io");
+    expect(expectedMatrixServerName("https://backend.telecrypt.io", "stage.telecrypt.io")).toBe("stage.telecrypt.io");
+    expect(expectedMatrixServerName("https://backend.telecrypt.io:443", "telecrypt.io")).toBeNull();
+    expect(expectedMatrixServerName("https://backend.telecrypt.io/path", "telecrypt.io")).toBeNull();
+    expect(expectedMatrixServerName("http://localhost:8008", "localhost:8008")).toBe("localhost:8008");
+    expect(expectedMatrixServerName("http://localhost:8008/", "localhost:8008")).toBe("localhost:8008");
   });
 
   it("uses the SDK Matrix identity contract while binding saved users to the selected server", () => {

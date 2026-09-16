@@ -23,6 +23,7 @@ import { commandSignal } from "./cancellation.js";
  */
 export async function loginAndInitialize(
   homeserver: string,
+  serverName: string,
   hooks: DeviceCodeLoginHooks,
   signal: AbortSignal = commandSignal,
 ): Promise<Session> {
@@ -38,7 +39,7 @@ export async function loginAndInitialize(
     try {
       assertFreshProfileUnlocked(dir, lock);
       profilePreflightComplete = true;
-      session = await runDeviceCodeLogin(homeserver, hooks, signal);
+      session = await runDeviceCodeLogin(homeserver, serverName, hooks, signal);
       writeSessionUnlocked(session, dir, lock);
       sessionPersisted = true;
       opened = await initStorageForNewSession(session, dir, lock, signal);

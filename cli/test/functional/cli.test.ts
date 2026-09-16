@@ -80,7 +80,7 @@ async function loginProfile(
   let result;
   try {
     result = await runCli(
-      ["storage", "login", "--homeserver", HOMESERVER, "--no-browser", "--json"],
+      ["storage", "login", "--homeserver", HOMESERVER, "--server-name", "localhost:8008", "--no-browser", "--json"],
       {
         TELECRYPT_IO_STORAGE_HOME: dir,
       },
@@ -553,7 +553,7 @@ describe("CLI", () => {
     it("login rejects a local endpoint without Matrix OIDC discovery", async () => {
       const dir = freshProfileDir("missing-oidc");
       const res = await cliJson(
-        ["storage", "login", "--homeserver", `${HOMESERVER}/not-a-homeserver`, "--no-browser"],
+        ["storage", "login", "--homeserver", `${HOMESERVER}/not-a-homeserver`, "--server-name", "localhost:8008", "--no-browser"],
         {
           TELECRYPT_IO_STORAGE_HOME: dir,
         },

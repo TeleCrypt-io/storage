@@ -131,10 +131,11 @@ storage
   .command("login")
   .description("Log in and persist the session + crypto store to the profile")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
+  .requiredOption("--server-name <name>", "Canonical Matrix server name for the homeserver")
   .option("--no-browser", "Do not open the verification page automatically")
   .action(async (opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
-      const session = await loginAndInitialize(opts.homeserver, {
+      const session = await loginAndInitialize(opts.homeserver, opts.serverName, {
         openBrowser: !opts.browser,
         onVerification: ({ verificationUri, verificationUriComplete, userCode }) => {
           // Progress output — stderr only, so it never corrupts the stdout

@@ -1,4 +1,6 @@
-const BRAND_MARK_URL = "https://www.telecrypt.io/logo-mark.png";
+import { runtimePublicAssetOrigin } from "../lib/buildConfig";
+
+const BRAND_MARK_URL = `${runtimePublicAssetOrigin()}/logo-mark.png`;
 
 export function BrandMark() {
   return (

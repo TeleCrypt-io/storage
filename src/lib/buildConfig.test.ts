@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getRuntimeSettings, loadRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
 
 function setOrigin(origin: string): void {
   Object.defineProperty(window, "location", {
@@ -9,53 +9,39 @@ function setOrigin(origin: string): void {
 }
 
 beforeEach(() => {
-  setOrigin("https://storage.telecrypt.io");
+  setOrigin("http://localhost:5173");
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("page-bound environment", () => {
-  it("maps production storage hosting to the production backend", async () => {
-    expect(getRuntimeSettings()).toEqual({ homeserver: "https://backend.telecrypt.io", serverName: "telecrypt.io" });
-  });
-
-  it("maps stage hosting to the matching backend", async () => {
-    setOrigin("https://storage.stage.telecrypt.io");
-    expect(getRuntimeSettings()).toEqual({
-      homeserver: "https://backend.stage.telecrypt.io",
-      serverName: "stage.telecrypt.io",
+  it("uses the disposable loopback fixture during development", async () => {
+    await expect(loadRuntimeSettings()).resolves.toEqual({
+      homeserver: "http://localhost:8008",
+      serverName: "localhost:8008",
     });
-  });
-
-  it("allows only explicit loopback development", async () => {
-    setOrigin("http://localhost:5173");
-    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
-
-    setOrigin("http://127.0.0.1:5173");
-    expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
-
-    setOrigin("http://[::1]:5173");
     expect(getRuntimeSettings()).toEqual({ homeserver: "http://localhost:8008", serverName: "localhost:8008" });
   });
 
-  it.each([
-    "https://evil.telecrypt.io",
-    "https://storage.preview.telecrypt.io",
-    "https://storage.test.telecrypt.io",
-    "https://storage.a.telecrypt.io",
-    "https://storage.region.extra.telecrypt.io",
-    "https://storage--stage.telecrypt.io",
-    "https://storage-stage.telecrypt.io",
-    "http://storage.telecrypt.io",
-    "https://storage.telecrypt.io:8443",
-    "https://storage.telecrypt.io:443",
-    "http://user@localhost:5173",
-  ])("rejects an unapproved page origin: %s", async (origin) => {
-    setOrigin(origin);
-    expect(() => getRuntimeSettings()).toThrow();
-  });
-});
+  it("loads a deployment identity from same-origin config without a build-time environment", async () => {
+    vi.stubEnv("DEV", false);
+    setOrigin("https://storage.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ serverName: "example.test" }))));
 
-describe("runtimeOidcIssuer", () => {
-  it("derives the canonical MAS path from the page-bound backend", async () => {
-    expect(runtimeOidcIssuer()).toBe("https://backend.telecrypt.io/auth/");
+    await expect(loadRuntimeSettings()).resolves.toEqual({
+      homeserver: "https://backend.example.test",
+      serverName: "example.test",
+    });
+    expect(runtimeOidcIssuer()).toBe("https://backend.example.test/auth/");
+  });
+
+  it("rejects config from a different page origin", async () => {
+    vi.stubEnv("DEV", false);
+    setOrigin("https://storage.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ serverName: "other.test" }))));
+    await expect(loadRuntimeSettings()).rejects.toThrow(/does not match deployment config/u);
   });
 });
