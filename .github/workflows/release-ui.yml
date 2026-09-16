@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
       - name: Verify annotated release source
-        run: bash scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA"
+        run: bash scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA" storage-web-v
       - uses: actions/setup-node@v7.0.0
         with: {node-version-file: .node-version, cache: npm}
       - name: Verify release version

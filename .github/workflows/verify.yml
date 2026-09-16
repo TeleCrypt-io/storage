@@ -52,3 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run build
+
+      - name: Test release helpers
+        shell: bash
+        run: bash scripts/test-release-scripts.sh

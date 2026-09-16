@@ -3,9 +3,9 @@ name: Verify storage CLI
 on:
   push:
     branches: ["main"]
-    paths: ["cli/**", ".node-version", "LICENSE"]
+    paths: ["cli/**", "scripts/**", ".github/workflows/verify-cli.yml", ".node-version", "LICENSE"]
   pull_request:
-    paths: ["cli/**", ".node-version", "LICENSE"]
+    paths: ["cli/**", "scripts/**", ".github/workflows/verify-cli.yml", ".node-version", "LICENSE"]
 
 permissions:
   contents: read

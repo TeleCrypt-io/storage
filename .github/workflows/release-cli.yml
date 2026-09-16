@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: cli/package-lock.json
 
       - name: Verify annotated release source
-        run: bash cli/scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA"
+        run: bash scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA" storage-cli-v
 
       - name: Verify release version
         working-directory: cli
@@ -77,5 +77,5 @@ jobs:
       - name: Verify and download the immutable Release archive
         run: |
           set -euo pipefail
-          bash cli/scripts/verify-release.sh "$RELEASE_TAG" "$RELEASE_SHA" "$CLI_ASSET" "$CLI_DIGEST" "$CLI_SIZE" "$RUNNER_TEMP/cli-release"
+          bash scripts/verify-release.sh "$RELEASE_TAG" "$RELEASE_SHA" "$CLI_ASSET" "$CLI_DIGEST" "$CLI_SIZE" "$RUNNER_TEMP/cli-release"
           cmp "cli/release/$CLI_ASSET" "$RUNNER_TEMP/cli-release/$CLI_ASSET"
