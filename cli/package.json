@@ -49,11 +49,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TeleCrypt-io/storage.telecrypt.io.git",
+    "url": "git+https://github.com/TeleCrypt-io/storage.git",
     "directory": "cli"
   },
-  "homepage": "https://github.com/TeleCrypt-io/storage.telecrypt.io/tree/main/cli#readme",
+  "homepage": "https://github.com/TeleCrypt-io/storage/tree/main/cli#readme",
   "bugs": {
-    "url": "https://github.com/TeleCrypt-io/storage.telecrypt.io/issues"
+    "url": "https://github.com/TeleCrypt-io/storage/issues"
   }
 }

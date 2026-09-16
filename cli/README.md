@@ -5,7 +5,7 @@ The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 Current TeleCrypt project facts and product decisions are maintained in the canonical
 [`www.telecrypt.io/llms.txt`](https://www.telecrypt.io/llms.txt); this README documents the CLI commands.
 
-This package is maintained in the [`storage.telecrypt.io`](https://github.com/TeleCrypt-io/storage.telecrypt.io)
+This package is maintained in the [`storage.telecrypt.io`](https://github.com/TeleCrypt-io/storage)
 repository under `cli/`. It has an independent lockfile and release workflow so CLI checks and
 release archives remain isolated from the Web package at the repository root.
 
@@ -17,12 +17,12 @@ It consumes one exact public `@telecrypt-io/storage` library version and provide
 upload, download, rename, and deletion.
 
 **Distribution:** the standalone CLI is available only as an exact
-[GitHub Release](https://github.com/TeleCrypt-io/storage.telecrypt.io/releases), never from the NPM registry.
+[GitHub Release](https://github.com/TeleCrypt-io/storage/releases), never from the NPM registry.
 
 ## Install
 
 ```bash
-npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage.telecrypt.io/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
+npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
 ```
 
 Replace `X.Y.Z` with an existing release version. `npm` is used only as the Node installer: the

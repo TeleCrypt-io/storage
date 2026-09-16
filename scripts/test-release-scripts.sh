@@ -124,7 +124,7 @@ jq -n \
 release_check() {
   local mode=$1 metadata=$2 destination=$3 expected_digest=$4 expected_size=$5 expected_id=$6
   (cd "$root" && \
-    GITHUB_REPOSITORY=TeleCrypt-io/storage.telecrypt.io \
+    GITHUB_REPOSITORY=TeleCrypt-io/storage \
     FAKE_GH_MODE="$mode" FAKE_RELEASE_JSON="$metadata" FAKE_ARCHIVE="$archive" \
     PATH="$fake_bin:$PATH" \
     bash "$here/verify-release.sh" "$release_tag" "$commit_one" "$asset_name" \
