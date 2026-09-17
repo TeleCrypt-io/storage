@@ -12,15 +12,15 @@ const session: Session = {
   matrixServerName: "telecrypt.io",
   deviceId: "DEVICE",
   accessToken: "secret-access-token",
-  oidcIssuer: "https://backend.telecrypt.io/auth/",
+  oidcIssuer: "https://backend.telecrypt.io/",
   refreshToken: "secret-refresh-token",
   oidcClientId: "client-id",
-  oidcTokenEndpoint: "https://backend.telecrypt.io/auth/token",
+  oidcTokenEndpoint: "https://backend.telecrypt.io/oauth2/token",
 };
 
 const LOGOUT_URL = "https://backend.telecrypt.io/_matrix/client/v3/logout";
-const TOKEN_URL = "https://backend.telecrypt.io/auth/token";
-const REVOCATION_URL = "https://backend.telecrypt.io/auth/revoke";
+const TOKEN_URL = "https://backend.telecrypt.io/oauth2/token";
+const REVOCATION_URL = "https://backend.telecrypt.io/oauth2/revoke";
 const directories: string[] = [];
 
 function fixtureDirectory(prefix: string): string {

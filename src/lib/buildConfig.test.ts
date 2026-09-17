@@ -35,7 +35,7 @@ describe("page-bound environment", () => {
       homeserver: "https://backend.example.test",
       serverName: "example.test",
     });
-    expect(runtimeOidcIssuer()).toBe("https://backend.example.test/auth/");
+    expect(runtimeOidcIssuer()).toBe("https://backend.example.test/");
   });
 
   it("rejects config from a different page origin", async () => {

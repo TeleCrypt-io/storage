@@ -8,7 +8,7 @@ import { safeErrorMessage } from "../../src/output.js";
  * browser-facing forms. This is test infrastructure only: the password is used
  * solely to approve MAS OAuth, never by the product CLI's login flow.
  */
-const MAS_BASE = new URL("http://localhost:8008/auth/");
+const MAS_BASE = new URL("http://localhost:8008/");
 const APPROVAL_TIMEOUT_MS = 15_000;
 
 function cancellationError(): Error {
@@ -44,9 +44,6 @@ function localMasUrl(location: string): URL {
   const url = new URL(location, MAS_BASE);
   if (url.origin !== MAS_BASE.origin || url.username || url.password) {
     throw new Error(`approveDeviceCode: refusing non-local MAS URL ${location}`);
-  }
-  if (!url.pathname.startsWith(MAS_BASE.pathname)) {
-    throw new Error(`approveDeviceCode: refusing non-MAS URL ${location}`);
   }
   return url;
 }

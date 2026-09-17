@@ -22,15 +22,15 @@ vi.mock("@telecrypt-io/storage/core", async (importOriginal) => {
 const HOMESERVER = "https://backend.telecrypt.io";
 
 function metadataFor(homeserver: string, overrides: Partial<OidcClientConfig> = {}): OidcClientConfig {
-  const issuer = `${homeserver}/auth/`;
+  const issuer = `${homeserver}/`;
   return {
     issuer,
     authorization_endpoint: `${issuer}authorize`,
-    device_authorization_endpoint: `${issuer}device`,
-    registration_endpoint: `${issuer}register`,
-    token_endpoint: `${issuer}token`,
-    revocation_endpoint: `${issuer}revoke`,
-    jwks_uri: `${issuer}jwks`,
+    device_authorization_endpoint: `${issuer}oauth2/device`,
+    registration_endpoint: `${issuer}oauth2/registration`,
+    token_endpoint: `${issuer}oauth2/token`,
+    revocation_endpoint: `${issuer}oauth2/revoke`,
+    jwks_uri: `${issuer}oauth2/keys`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
     code_challenge_methods_supported: ["S256"],
@@ -58,7 +58,7 @@ describe("CLI OIDC endpoint validation", () => {
     } as unknown as ChildProcess;
     vi.mocked(spawn).mockReturnValue(child);
 
-    expect(() => tryOpenBrowser("https://backend.telecrypt.io/auth/device")).not.toThrow();
+    expect(() => tryOpenBrowser("https://backend.telecrypt.io/oauth2/device")).not.toThrow();
     expect(child.once).toHaveBeenCalledWith("error", expect.any(Function));
   });
 
@@ -102,22 +102,22 @@ describe("CLI OIDC endpoint validation", () => {
     expect(() => assertOidcEndpoint("https://evil.example/token", HOMESERVER, "OIDC token endpoint")).toThrow(
       /configured OIDC origin/,
     );
-    expect(assertOidcEndpoint("https://backend.telecrypt.io/auth/token", HOMESERVER, "OIDC token endpoint")).toBe(
-      "https://backend.telecrypt.io/auth/token",
+    expect(assertOidcEndpoint("https://backend.telecrypt.io/oauth2/token", HOMESERVER, "OIDC token endpoint")).toBe(
+      "https://backend.telecrypt.io/oauth2/token",
     );
   });
 
   it("allows the issuer-provided verification code query on the trusted origin", () => {
-    const issuer = new URL("https://backend.telecrypt.io/auth/");
+    const issuer = new URL("https://backend.telecrypt.io/");
     expect(
       assertOidcEndpoint(
-        "https://backend.telecrypt.io/auth/device?user_code=ABC",
+        "https://backend.telecrypt.io/oauth2/device?user_code=ABC",
         HOMESERVER,
         "OIDC verification URI",
         issuer,
         true,
       ),
-    ).toBe("https://backend.telecrypt.io/auth/device?user_code=ABC");
+    ).toBe("https://backend.telecrypt.io/oauth2/device?user_code=ABC");
   });
 
   it("uses verification URLs on the trusted issuer path without filtering their query spelling", async () => {
@@ -126,7 +126,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device?redirect_uri=https%3A%2F%2Fevil.example",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device?redirect_uri=https%3A%2F%2Fevil.example",
       expires_in: 600,
       interval: 1,
     });
@@ -147,7 +147,7 @@ describe("CLI OIDC endpoint validation", () => {
       accessToken: "access-token",
     });
     expect(onVerification).toHaveBeenCalledWith(expect.objectContaining({
-      verificationUri: "https://backend.telecrypt.io/auth/device?redirect_uri=https%3A%2F%2Fevil.example",
+      verificationUri: "https://backend.telecrypt.io/oauth2/device?redirect_uri=https%3A%2F%2Fevil.example",
     }));
   });
 
@@ -225,7 +225,7 @@ describe("CLI OIDC endpoint validation", () => {
       vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
         device_code: "device-code",
         user_code: "ABC-123",
-        verification_uri: "https://backend.telecrypt.io/auth/device",
+        verification_uri: "https://backend.telecrypt.io/oauth2/device",
         expires_in: 600,
         interval: 1,
       });
@@ -252,7 +252,7 @@ describe("CLI OIDC endpoint validation", () => {
       vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
         device_code: "device-code",
         user_code: "ABC-123",
-        verification_uri: "https://backend.telecrypt.io/auth/device",
+        verification_uri: "https://backend.telecrypt.io/oauth2/device",
         expires_in: 600,
         interval: 1,
       });
@@ -279,7 +279,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });
@@ -302,7 +302,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });
@@ -341,7 +341,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });
@@ -383,8 +383,8 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
-      verification_uri_complete: "https://backend.telecrypt.io/auth/device?user_code=ABC-123",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
+      verification_uri_complete: "https://backend.telecrypt.io/oauth2/device?user_code=ABC-123",
       expires_in: 600,
       interval: 1,
     });
@@ -407,11 +407,11 @@ describe("CLI OIDC endpoint validation", () => {
       accessToken: "access-token",
       refreshToken: "refresh-token",
       oidcClientId: "client-id",
-      oidcTokenEndpoint: "https://backend.telecrypt.io/auth/token",
+      oidcTokenEndpoint: "https://backend.telecrypt.io/oauth2/token",
     });
     expect(verification).toHaveBeenCalledWith({
-      verificationUri: "https://backend.telecrypt.io/auth/device",
-      verificationUriComplete: "https://backend.telecrypt.io/auth/device?user_code=ABC-123",
+      verificationUri: "https://backend.telecrypt.io/oauth2/device",
+      verificationUriComplete: "https://backend.telecrypt.io/oauth2/device?user_code=ABC-123",
       userCode: "ABC-123",
     });
     expect(core.whoAmI).toHaveBeenCalledWith(
@@ -430,7 +430,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: `${stageHomeserver}/auth/device`,
+      verification_uri: `${stageHomeserver}/oauth2/device`,
       expires_in: 600,
       interval: 1,
     });
@@ -460,7 +460,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });
@@ -489,7 +489,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });
@@ -511,7 +511,7 @@ describe("CLI OIDC endpoint validation", () => {
     vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
+      verification_uri: "https://backend.telecrypt.io/oauth2/device",
       expires_in: 600,
       interval: 1,
     });

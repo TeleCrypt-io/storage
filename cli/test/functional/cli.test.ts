@@ -131,11 +131,11 @@ describe("CLI", () => {
       matrixServerName: "localhost:8008",
       deviceId: "CONCURRENTDEVICE",
       accessToken: "concurrent-access-token",
-      oidcIssuer: `${HOMESERVER}/auth/`,
+      oidcIssuer: `${HOMESERVER}/`,
       refreshToken: "concurrent-refresh-token",
       oidcClientId: "concurrent-client",
-      oidcTokenEndpoint: `${HOMESERVER}/auth/token`,
-      oidcRevocationEndpoint: `${HOMESERVER}/auth/revoke`,
+      oidcTokenEndpoint: `${HOMESERVER}/oauth2/token`,
+      oidcRevocationEndpoint: `${HOMESERVER}/oauth2/revoke`,
     };
     writeSession(session, dir);
     const lock = acquireProfileLock(dir);
@@ -177,11 +177,11 @@ describe("CLI", () => {
         matrixServerName: "localhost:8008",
         deviceId: "LOGOUTDEVICE",
         accessToken: "logout-access-token",
-        oidcIssuer: `http://127.0.0.1:${address.port}/auth/`,
+        oidcIssuer: `http://127.0.0.1:${address.port}/`,
         refreshToken: "logout-refresh-token",
         oidcClientId: "logout-client",
-        oidcTokenEndpoint: `http://127.0.0.1:${address.port}/auth/token`,
-        oidcRevocationEndpoint: `http://127.0.0.1:${address.port}/auth/revoke`,
+        oidcTokenEndpoint: `http://127.0.0.1:${address.port}/oauth2/token`,
+        oidcRevocationEndpoint: `http://127.0.0.1:${address.port}/oauth2/revoke`,
       };
     writeSession(session, dir);
 
