@@ -32,7 +32,6 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [shareUserId, setShareUserId] = useState("");
-  const [shareRole, setShareRole] = useState<"viewer" | "editor">("editor");
   const identityRef = useRef<{ storage: typeof storage; vaultId: string }>({
     storage: null,
     vaultId: "",
@@ -147,7 +146,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     try {
       await withAccountSignal(
         accountSignal,
-        () => core.shareVault(expectedStorage, expectedVaultId, targetUserId, shareRole, {
+        () => core.shareVault(expectedStorage, expectedVaultId, targetUserId, "viewer", {
           signal: accountSignal ?? undefined,
         }),
       );
@@ -251,7 +250,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
 
       {canManage ? (
         <form onSubmit={handleShare} className="invite-form">
-          <label htmlFor="share-user-id">Invite user</label>
+          <label htmlFor="share-user-id">Invite reader</label>
           <input
             className="tc-field"
             id="share-user-id"
@@ -262,17 +261,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
             data-testid="share-user-id"
           />
           <div className="invite-form-row">
-            <label htmlFor="share-role">Role</label>
-            <select
-              className="tc-field"
-              id="share-role"
-              value={shareRole}
-              onChange={(e) => setShareRole(e.target.value as "viewer" | "editor")}
-              data-testid="share-role"
-            >
-              <option value="viewer">Viewer</option>
-              <option value="editor">Editor</option>
-            </select>
+            <span className="muted">Readers can browse and download files.</span>
             <button
               type="submit"
               className="btn btn-primary"

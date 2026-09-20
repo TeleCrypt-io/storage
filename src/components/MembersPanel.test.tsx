@@ -84,7 +84,7 @@ describe("MembersPanel access state", () => {
   });
 
   it("refreshes a confirmed invite after ownership is revoked in flight", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
     let role = "owner";
     vi.mocked(core.getVaultOwnership).mockImplementation(() =>
       role === "owner" ? { status: "owner" } : { status: "not-owner" },
@@ -102,7 +102,7 @@ describe("MembersPanel access state", () => {
     const submit = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
     role = "viewer";
-    share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost:8008", role: "editor" });
+    share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost:8008", role: "viewer" });
     await submit;
 
     await waitFor(() => expect(core.listMembers).toHaveBeenCalledTimes(2));
@@ -110,7 +110,7 @@ describe("MembersPanel access state", () => {
   });
 
   it("surfaces a share failure after ownership is revoked in flight", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
     const user = userEvent.setup();
@@ -141,7 +141,7 @@ describe("MembersPanel access state", () => {
   });
 
   it("serializes overlapping invitations", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
     const user = userEvent.setup();
@@ -153,7 +153,7 @@ describe("MembersPanel access state", () => {
     await waitFor(() => expect(core.shareVault).toHaveBeenCalledTimes(1));
     const second = user.click(screen.getByTestId("share-submit"));
     expect(core.shareVault).toHaveBeenCalledTimes(1);
-    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost:8008", role: "editor" });
+    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost:8008", role: "viewer" });
     await first;
     await second;
 

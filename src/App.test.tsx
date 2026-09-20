@@ -1107,7 +1107,7 @@ describe("sharing", () => {
     const firstMembersA = deferred<Array<{ userId: string; role: string; membership: string }>>();
     const membersB = deferred<Array<{ userId: string; role: string; membership: string }>>();
     const secondMembersA = deferred<Array<{ userId: string; role: string; membership: string }>>();
-    const share = deferred<{ vaultId: string; userId: string; role: "editor" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
     let callsA = 0;
     vi.mocked(core.listVaults).mockResolvedValue([
       { id: "!a:localhost", name: "A" },
@@ -1145,7 +1145,7 @@ describe("sharing", () => {
     const currentInput = await screen.findByTestId("share-user-id");
     await user.type(currentInput, "@new:localhost:8008");
 
-    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost:8008", role: "editor" });
+    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost:8008", role: "viewer" });
     await shareTask;
     await waitFor(() => expect(currentInput).toHaveValue("@new:localhost:8008"));
 
@@ -1161,10 +1161,10 @@ describe("sharing", () => {
     vi.mocked(core.shareVault).mockResolvedValue({
       vaultId: "!vault:localhost",
       userId: "@bob:localhost:8008",
-      role: "editor",
+      role: "viewer",
     });
     vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: "@bob:localhost:8008", role: "editor", membership: "invite" },
+      { userId: "@bob:localhost:8008", role: "viewer", membership: "invite" },
     ]);
 
     await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
@@ -1174,7 +1174,7 @@ describe("sharing", () => {
       expect.anything(),
       "!vault:localhost",
       "@bob:localhost:8008",
-      "editor",
+      "viewer",
       abortOptions(),
     );
     expect(await screen.findByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost:8008");
