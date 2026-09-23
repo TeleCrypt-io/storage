@@ -11,11 +11,10 @@ import {
   uploadFile,
 } from "./uiHelpers";
 
-// The core product flow: userA creates a vault and shares it with userB as
-// editor (two independent browser contexts — two real, separate crypto
-// devices); userB uploads a file; userA sees and downloads userB's file,
-// with bytes identical to what userB uploaded. No mocks — real Synapse,
-// real E2EE, two real browser sessions.
+// The core product flow: userA creates a vault, uploads a file, and shares it
+// with userB as a viewer (two independent browser contexts — two real, separate
+// crypto devices); userB downloads and decrypts the owner's file. No mocks —
+// real Synapse, real E2EE, two real browser sessions.
 test("multi-participant share: userA and userB exchange a file", async ({ contexts }) => {
   const userA = await registerE2eUser("e2e_share_a");
   const userB = await registerE2eUser("e2e_share_b");
@@ -41,29 +40,27 @@ test("multi-participant share: userA and userB exchange a file", async ({ contex
   await pageA.getByTestId("nav-vaults").click();
   const vaultId = await createVault(pageA, "Team Vault");
   await openVaultByName(pageA, "Team Vault");
+  const payload = Buffer.from("hello from the vault owner\n".repeat(20));
+  await uploadFile(pageA, "from-a.txt", "text/plain", payload);
 
   await pageA.getByTestId("share-user-id").fill(userB.userId);
-  await pageA.getByTestId("share-role").selectOption("editor");
   await pageA.getByTestId("share-submit").click();
   await expect(
     pageA.locator(`[data-testid="member-item"][data-user-id="${userB.userId}"]`),
   ).toBeVisible({ timeout: 20000 });
 
   // userB: log in (separate context = separate device/crypto store), join
-  // the vault by the ID userA's session exposed in the DOM, and upload.
+  // the vault by the ID userA's session exposed in the DOM, and download.
   await loginViaUI(pageB, userB);
   await joinVault(pageB, vaultId, "Team Vault");
   await openVaultByName(pageB, "Team Vault");
 
-  const bobBytes = Buffer.from("hello from userB's editor upload\n".repeat(20));
-  await uploadFile(pageB, "from-b.txt", "text/plain", bobBytes);
-
-  // userA: the file userB just uploaded must appear and decrypt.
+  // The owner's existing file must appear and decrypt for the reader.
   await expect(
-    pageA.locator('[data-testid="file-item"]', { hasText: "from-b.txt" }),
+    pageB.locator('[data-testid="file-item"]', { hasText: "from-a.txt" }),
   ).toBeVisible({ timeout: 20000 });
-  const downloadedByA = await downloadFileBytes(pageA, "from-b.txt");
-  expect(downloadedByA.equals(bobBytes)).toBe(true);
+  const downloadedByB = await downloadFileBytes(pageB, "from-a.txt");
+  expect(downloadedByB.equals(payload)).toBe(true);
   consoleA.assertClean();
   consoleB.assertClean();
 });

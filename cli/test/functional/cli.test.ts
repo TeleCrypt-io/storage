@@ -264,36 +264,28 @@ describe("CLI", () => {
       expect(vaultRes.code).toBe(0);
       const vaultId = vaultRes.json.id as string;
 
-      const shareRes = await cliJson(
-        ["storage", "vault", "share", vaultId, userB.userId, "--role", "editor"],
-        envA,
-      );
+      const srcPath = artifactPath("from-a.txt");
+      const originalBytes = `A's file ${Math.random()}`;
+      fs.writeFileSync(srcPath, originalBytes);
+      const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], envA);
+      expect(uploadRes.code).toBe(0);
+      const fileId = uploadRes.json.id as string;
+
+      const shareRes = await cliJson(["storage", "vault", "share", vaultId, userB.userId], envA);
       expect(shareRes.code).toBe(0);
-      expect(shareRes.json).toMatchObject({ vaultId, userId: userB.userId, role: "editor" });
+      expect(shareRes.json).toMatchObject({ vaultId, userId: userB.userId, role: "viewer" });
 
       const joinRes = await cliJson(["storage", "vault", "join", vaultId], envB);
       expect(joinRes.code).toBe(0);
 
-      const srcPath = artifactPath("from-b.txt");
-      const originalBytes = `B's file ${Math.random()}`;
-      fs.writeFileSync(srcPath, originalBytes);
-
-      const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], envB);
-      expect(uploadRes.code).toBe(0);
-      const fileId = uploadRes.json.id as string;
-
-      // A downloads B's file. The megolm key-share to-device message is
-      // awaited as part of B's upload resolving, so this should generally
-      // succeed on the first try — but poll the real condition (repeated
-      // fresh CLI invocations, each a genuine independent sync) rather than
-      // assume, since key delivery is still asynchronous end-to-end.
-      const destPath = artifactPath("from-b-downloaded.txt");
+      // B downloads the owner's existing file using an independent profile.
+      const destPath = artifactPath("from-a-downloaded.txt");
       const downloadResult = await waitFor(
         async (attemptSignal) => {
-          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], envA, { abortSignal: attemptSignal });
+          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], envB, { abortSignal: attemptSignal });
           return res.code === 0 ? res : null;
         },
-        { label: "A decrypts B's file", timeoutMs: 30000, intervalMs: 1500 },
+        { label: "B decrypts the owner's file", timeoutMs: 30000, intervalMs: 1500 },
       );
       expect(downloadResult.code).toBe(0);
       const downloadedBytes = fs.readFileSync(destPath, "utf8");
@@ -309,7 +301,7 @@ describe("CLI", () => {
   );
 
   it(
-    "CLI.3 vault members reports the right participants and roles",
+    "CLI.3 vault members reports the owner and viewer participants",
     async () => {
       const dirA = freshProfileDir("membersA");
       const dirB = freshProfileDir("membersB");
@@ -322,7 +314,7 @@ describe("CLI", () => {
       const vaultRes = await cliJson(["storage", "vault", "create", "Roles"], envA);
       const vaultId = vaultRes.json.id as string;
 
-      await cliJson(["storage", "vault", "share", vaultId, userB.userId, "--role", "viewer"], envA);
+      await cliJson(["storage", "vault", "share", vaultId, userB.userId], envA);
       await cliJson(["storage", "vault", "join", vaultId], envB);
 
       const membersRes = await waitFor(
@@ -341,23 +333,6 @@ describe("CLI", () => {
       const viewer = members.find((m) => m.userId === userB.userId);
       expect(viewer?.role).toBe("viewer");
       expect(viewer?.membership).toBe("join");
-
-      // Promote to editor and confirm `vault members` reflects it.
-      await cliJson(["storage", "vault", "share", vaultId, userB.userId, "--role", "editor"], envA);
-      const updated = await waitFor(
-        async (attemptSignal) => {
-          const res = await cliJson(["storage", "vault", "members", vaultId], envA, { abortSignal: attemptSignal });
-          const m = (res.json.members as { userId: string; role: string }[]).find(
-            (x) => x.userId === userB.userId,
-          );
-          return m?.role === "editor" ? res : null;
-        },
-        { label: "role updated to editor", timeoutMs: 15000 },
-      );
-      const editor = (updated.json.members as { userId: string; role: string }[]).find(
-        (m) => m.userId === userB.userId,
-      );
-      expect(editor?.role).toBe("editor");
     },
     60000,
   );

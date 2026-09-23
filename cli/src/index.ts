@@ -387,13 +387,12 @@ vault
 
 vault
   .command("share <vaultId> <userId>")
-  .description("Invite a participant to a shared vault at a given role")
-  .option("--role <role>", "viewer or editor", "viewer")
-  .action(async (vaultId: string, userId: string, opts, command: Command) => {
+  .description("Invite a viewer to the vault")
+  .action(async (vaultId: string, userId: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       validateSharedMatrixUserId(userId);
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, opts.role, { signal: operationSignal }), "vault share");
+        const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, "viewer", { signal: operationSignal }), "vault share");
         return {
           json: { ...result },
           text: `Invited ${safeOutputField(result.userId)} to ${safeOutputField(result.vaultId)} as ${safeOutputField(result.role)}`,

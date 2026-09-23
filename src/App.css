@@ -556,18 +556,13 @@
   gap: 8px;
 }
 
-.invite-form input,
-.invite-form select {
+.invite-form input {
   background: var(--bg);
 }
 
 .invite-form-row {
   display: flex;
   gap: 8px;
-}
-
-.invite-form-row select {
-  flex: 1;
 }
 
 .warning {
@@ -706,9 +701,5 @@
 
   .invite-form-row {
     flex-wrap: wrap;
-  }
-
-  .invite-form-row select {
-    min-width: 0;
   }
 }

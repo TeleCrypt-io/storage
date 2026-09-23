@@ -85,7 +85,7 @@ telecrypt-io storage vault subfolder create <parentId> <name>
 telecrypt-io storage vault subfolder list <parentId>
 telecrypt-io storage vault subfolder rename <folderId> <name>
 telecrypt-io storage vault subfolder delete <folderId>
-telecrypt-io storage vault share <vaultId> <userId> [--role viewer|editor]   # default: viewer
+telecrypt-io storage vault share <vaultId> <userId>  # invite as a viewer
 telecrypt-io storage vault join <vaultId>            # accept a pending invite
 telecrypt-io storage vault members <vaultId>         # participants + roles
 telecrypt-io storage vault unshare <vaultId> <userId>
@@ -93,8 +93,8 @@ telecrypt-io storage vault rename <vaultId> <name>
 telecrypt-io storage vault delete <vaultId>
 ```
 
-`vault share` can also be re-run against an existing participant to change their role. The
-`subfolder` commands manage nested directory nodes within a vault.
+Vault owners are the only participants who can change files. Invited viewers can list and download
+files. The `subfolder` commands manage nested directory nodes within a vault.
 
 ### Files
 
@@ -124,14 +124,14 @@ TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://bac
 
 VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --role editor --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage vault join "$VAULT_ID" --json
 
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file upload "$VAULT_ID" ./report.pdf --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file upload "$VAULT_ID" ./report.pdf --json
 # { "id": "$...", "name": "report.pdf", "mimetype": "application/pdf" }
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file list "$VAULT_ID" --json
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file download "$VAULT_ID" '$...' ./report-downloaded.pdf --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file list "$VAULT_ID" --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file download "$VAULT_ID" '$...' ./report-downloaded.pdf --json
 ```
 
 ## Example: recovery on a new device
