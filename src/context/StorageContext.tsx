@@ -203,6 +203,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           const bootstrapOpts = {
             syncTimeoutMs: UI_SYNC_TIMEOUT_MS,
             initTimeoutMs: UI_INIT_TIMEOUT_MS,
+            startClient: false,
             signal: abortController.signal,
             onProgress: (message: string) => {
               if (gen !== connectGenRef.current) return;

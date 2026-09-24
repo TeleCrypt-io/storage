@@ -219,6 +219,7 @@ async function buildStorageForSession(
   refreshState: RefreshState,
   lock: ProfileLock,
   signal?: AbortSignal,
+  startClient = true,
 ): Promise<TeleCryptIOStorage> {
   // OAuth providers may rotate a refresh token once and omit it from a later response. Track the
   // latest persisted token set so a later omission cannot resurrect the pre-rotation token that
@@ -242,7 +243,12 @@ async function buildStorageForSession(
     session.deviceId,
   );
 
-  return TeleCryptIOStorage.createFromOidc({
+  const createFromOidc = TeleCryptIOStorage.createFromOidc as (
+    options: Parameters<typeof TeleCryptIOStorage.createFromOidc>[0] & {
+      onKeySafeStateChanged?: () => Promise<void>;
+    },
+  ) => ReturnType<typeof TeleCryptIOStorage.createFromOidc>;
+  return createFromOidc({
     baseUrl: session.homeserver,
     serverName: session.matrixServerName,
     userId: session.userId,
@@ -250,6 +256,14 @@ async function buildStorageForSession(
     deviceId: session.deviceId,
     refreshToken: session.refreshToken,
     tokenRefreshFunction,
+    // The CLI's IndexedDB implementation is process-local. Persist pending
+    // Safe state before the SDK mutates its corresponding server records so
+    // a process exit can resume setup with the same Recovery Key.
+    onKeySafeStateChanged: async () => {
+      if (!refreshState.active) throw new StorageError("storage command is closing; retry the operation");
+      await persistCryptoStoreBounded(cryptoSnapshotPath(dir), lock);
+    },
+    startClient,
     signal,
   });
 }
@@ -260,6 +274,7 @@ async function createStorageForSession(
   refreshState: RefreshState,
   lock: ProfileLock,
   signal: AbortSignal,
+  startClient = true,
 ): Promise<TeleCryptIOStorage> {
   return boundedStorageOperation(
     (operationSignal) => buildStorageForSession(
@@ -268,6 +283,7 @@ async function createStorageForSession(
       refreshState,
       lock,
       operationSignal,
+      startClient,
     ),
     STORAGE_OPEN_TIMEOUT_MS,
     signal,
@@ -372,7 +388,9 @@ function createOpenedStorage(
     // earlier observer, client, snapshot, or lock step fails.
     attempt(() => stopObservingBackupProgress(storage));
     attempt(() => storage.getClient().stopClient());
-    if (snapshotSafe) await attemptAsync(() => persistCryptoStoreBounded(snapshotPath, lock));
+    if (snapshotSafe) {
+      await attemptAsync(() => persistCryptoStoreBounded(snapshotPath, lock));
+    }
     if (ownsLock) attempt(() => lock.release());
 
     if (failures.length === 1) throw failures[0];
@@ -390,6 +408,7 @@ function createOpenedStorage(
 export async function openStorage(
   dir: string = profileDir(),
   signal: AbortSignal = commandSignal,
+  startClient = true,
 ): Promise<OpenedStorage> {
   const lock = acquireProfileLock(dir);
   if (signal.aborted) {
@@ -425,6 +444,7 @@ export async function openStorage(
       refreshState,
       lock,
       signal,
+      startClient,
     );
   } catch (error) {
     refreshState.active = false;
@@ -440,7 +460,7 @@ export async function openStorage(
  * upload. This matters specifically because a CLI command is a *short-lived
  * process*: the backup engine deliberately fire-and-forgets its upload loop
  * with a randomised 0-10s startup jitter (to avoid a multi-device thundering
- * herd), so a command that creates a new megolm session (recovery setup,
+ * herd), so a command that creates a new megolm session (Safe setup,
  * or a file upload once recovery is already set up) and then exits
  * immediately can easily outrun that loop, leaving the new key silently
  * absent from the backup — recoverable-looking but not actually recoverable.
@@ -535,6 +555,7 @@ export async function initStorageForNewSession(
       refreshState,
       lock,
       signal,
+      false,
     );
   } catch (error) {
     refreshState.active = false;

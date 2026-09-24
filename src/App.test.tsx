@@ -95,8 +95,25 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function fakeStorage(recoverySetup = false) {
+function fakeStorage(recoverySetup = true) {
+  let safeStatus: { state: "ready" | "setup-required" | "confirmation-required" | "restore-required"; recoveryKey?: string } = { state: recoverySetup ? "ready" : "setup-required" };
+  const keySafe = {
+    getStatus: vi.fn(async (_signal?: AbortSignal) => safeStatus),
+    setup: vi.fn(async (_signal?: AbortSignal) => {
+      safeStatus = { state: "confirmation-required", recoveryKey: "EsTx 1234 5678" };
+      return { recoveryKey: safeStatus.recoveryKey };
+    }),
+    confirmSaved: vi.fn(async (_signal?: AbortSignal) => {
+      safeStatus = { state: "ready" };
+      return safeStatus;
+    }),
+    restore: vi.fn(async (_key: string, _signal?: AbortSignal) => {
+      safeStatus = { state: "ready" };
+      return { imported: 3, total: 3, state: "ready" };
+    }),
+  };
   const stopClient = vi.fn();
+  const startSync = vi.fn(async () => undefined);
   const crypto = {
     getKeyBackupInfo: vi.fn().mockResolvedValue(recoverySetup ? {} : null),
     getSecretStorageStatus: vi.fn().mockResolvedValue({
@@ -105,7 +122,9 @@ function fakeStorage(recoverySetup = false) {
     }),
   };
   return {
+    keySafe,
     stopClient,
+    startSync,
     getClient: () => ({
       stopClient,
       getCrypto: () => crypto,
@@ -133,7 +152,7 @@ function fakeStorage(recoverySetup = false) {
 
 async function loginAndReachVaults(
   initialVaults: Array<{ id: string; name: string }> = [],
-  recoverySetup = false,
+  recoverySetup = true,
 ) {
   const storage = fakeStorage(recoverySetup);
   vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
@@ -343,11 +362,12 @@ describe("login", () => {
     );
     expect(core.TeleCryptIOStorage.createFromOidc).toHaveBeenCalledWith(
       expect.objectContaining({
-        baseUrl: SESSION.homeserver,
-        serverName: "localhost:8008",
-        userId: SESSION.userId,
-        deviceId: SESSION.deviceId,
-        accessToken: SESSION.accessToken,
+      baseUrl: SESSION.homeserver,
+      serverName: "localhost:8008",
+      userId: SESSION.userId,
+      deviceId: SESSION.deviceId,
+      accessToken: SESSION.accessToken,
+      startClient: false,
       }),
     );
     expect(screen.getByTestId("no-vaults")).toBeInTheDocument();
@@ -1204,60 +1224,110 @@ describe("sharing", () => {
   });
 });
 
-describe("recovery", () => {
-  it("sets up recovery, requires confirm saved, then dismisses key display", async () => {
-    const { storage } = await loginAndReachVaults();
-    vi.mocked(storage.keys.setupRecovery).mockResolvedValue({ recoveryKey: "EsTx 1234 5678" });
+async function loginAtSafe(state: "setup-required" | "confirmation-required" | "restore-required" = "setup-required") {
+  const storage = fakeStorage(false);
+  if (state !== "setup-required") storage.keySafe.getStatus.mockResolvedValueOnce({
+    state,
+    ...(state === "confirmation-required" ? { recoveryKey: "EsTx pending key" } : {}),
+  });
+  vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
+    issuer: runtimeOidcIssuer(), token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+  } as never);
+  vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
+  vi.mocked(core.listVaults).mockResolvedValue([]);
+  sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
+  const user = userEvent.setup();
+  const view = render(<App />);
+  await screen.findByTestId(state === "confirmation-required" ? "key-safe-key-display" : `key-safe-${state}`);
+  return { storage, user, view };
+}
 
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId("nav-recovery"));
-    await user.click(await screen.findByTestId("setup-recovery"));
-
-    expect(storage.keys.setupRecovery).toHaveBeenCalled();
-    expect(await screen.findByTestId("recovery-key-value")).toHaveTextContent("EsTx 1234 5678");
-    expect(screen.queryByTestId("restore-key-input")).not.toBeInTheDocument();
-
-    expect(screen.getByTestId("recovery-setup-done")).toBeDisabled();
-    await user.click(screen.getByTestId("confirm-saved-recovery-key"));
-    await user.click(screen.getByTestId("recovery-setup-done"));
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument(),
-    );
-    expect(await screen.findByTestId("recovery-active")).toBeInTheDocument();
+describe("Decryption Key Safe", () => {
+  it("requires setup and saved-key confirmation before showing files", async () => {
+    const { storage, user } = await loginAtSafe();
+    expect(screen.getByTestId("nav-vaults")).toBeDisabled();
+    expect(core.listVaults).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("setup-key-safe"));
+    expect(storage.keySafe.setup).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(await screen.findByTestId("key-safe-recovery-key")).toHaveTextContent("EsTx 1234 5678");
+    expect(screen.getByText(/Resetting your account password will not restore access/)).toBeVisible();
+    expect(core.listVaults).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "I've saved my key" }));
+    expect(storage.keySafe.confirmSaved).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(await screen.findByTestId("no-vaults")).toBeVisible();
+    expect(screen.queryByTestId("key-safe-recovery-key")).not.toBeInTheDocument();
   });
 
-  it("restores from a pasted key when recovery is already configured", async () => {
-    const { storage } = await loginAndReachVaults([], true);
-    vi.mocked(storage.keys.restoreFromRecoveryKey).mockResolvedValue({ imported: 3, total: 3 });
-
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId("nav-recovery"));
-    expect(await screen.findByTestId("recovery-active")).toHaveTextContent(
-      "Recovery is configured for this account.",
-    );
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /set up recovery/i })).not.toBeInTheDocument();
-    await user.click(await screen.findByTestId("restore-expand"));
-    await user.type(screen.getByTestId("restore-key-input"), "EsTx recovery key text");
-    await user.click(screen.getByTestId("restore-submit"));
-
-    expect(storage.keys.restoreFromRecoveryKey).toHaveBeenCalledWith(
-      "EsTx recovery key text",
-      expect.anything(),
-    );
-    expect(await screen.findByTestId("restore-result")).toHaveTextContent("Imported 3 of 3");
+  it("resumes a pending key without setting up another safe", async () => {
+    const { storage, user } = await loginAtSafe("confirmation-required");
+    expect(screen.getByTestId("key-safe-recovery-key")).toHaveTextContent("EsTx pending key");
+    expect(storage.keySafe.setup).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("confirm-saved-key"));
+    expect(await screen.findByTestId("no-vaults")).toBeVisible();
   });
 
-  it("shows restore expandable when account recovery is not configured", async () => {
-    await loginAndReachVaults();
+  it("copies the key without acknowledging it", async () => {
+    const { storage, user } = await loginAtSafe("confirmation-required");
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    await user.click(screen.getByTestId("copy-key-safe-key"));
+    expect(copy).toHaveBeenCalledWith("EsTx pending key");
+    expect(screen.getByTestId("copy-key-safe-key")).toHaveTextContent("Copied");
+    expect(storage.keySafe.confirmSaved).not.toHaveBeenCalled();
+    expect(screen.getByTestId("nav-vaults")).toBeDisabled();
+  });
 
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId("nav-recovery"));
-    expect(await screen.findByTestId("recovery-not-setup")).toHaveTextContent(
-      "Recovery is not configured on this account.",
-    );
-    expect(await screen.findByTestId("restore-expand")).toBeInTheDocument();
-    expect(screen.queryByTestId("restore-key-input")).not.toBeInTheDocument();
+  it("keeps setup pending if copying fails", async () => {
+    const { storage, user } = await loginAtSafe("confirmation-required");
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("Clipboard unavailable"));
+    await user.click(screen.getByTestId("copy-key-safe-key"));
+    expect(await screen.findByTestId("key-safe-error")).toHaveTextContent("Clipboard unavailable");
+    expect(storage.keySafe.confirmSaved).not.toHaveBeenCalled();
+    expect(screen.getByTestId("key-safe-recovery-key")).toBeVisible();
+  });
+
+  it("downloads a text key without acknowledging it", async () => {
+    const { storage, user } = await loginAtSafe("confirmation-required");
+    const create = vi.fn().mockReturnValue("blob:test-key");
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: create });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revoke });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await user.click(screen.getByTestId("save-key-safe-key"));
+    expect(create).toHaveBeenCalledWith(expect.any(Blob));
+    expect(click).toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledWith("blob:test-key");
+    expect(storage.keySafe.confirmSaved).not.toHaveBeenCalled();
+    expect(screen.getByTestId("nav-vaults")).toBeDisabled();
+  });
+
+  it("restores the existing safe before allowing files", async () => {
+    const { storage, user } = await loginAtSafe("restore-required");
+    expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
+    await user.type(screen.getByTestId("restore-key-input"), "EsTx existing key");
+    await user.click(screen.getByTestId("restore-key-submit"));
+    expect(storage.keySafe.restore).toHaveBeenCalledWith("EsTx existing key", expect.any(AbortSignal));
+    expect(storage.keySafe.setup).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("no-vaults")).toBeVisible();
+  });
+
+  it("does not unlock files after failed confirmation and rereads status on retry", async () => {
+    const { storage, user } = await loginAtSafe("confirmation-required");
+    storage.keySafe.confirmSaved.mockRejectedValueOnce(new Error("Confirmation failed"));
+    storage.keySafe.getStatus.mockResolvedValue({ state: "confirmation-required", recoveryKey: "EsTx pending key" });
+    await user.click(screen.getByTestId("confirm-saved-key"));
+    expect(await screen.findByTestId("key-safe-error")).toHaveTextContent("Confirmation failed");
+    expect(screen.getByTestId("nav-vaults")).toBeDisabled();
+    await user.click(screen.getByTestId("key-safe-retry"));
+    expect(await screen.findByTestId("key-safe-recovery-key")).toHaveTextContent("EsTx pending key");
+    expect(storage.keySafe.setup).not.toHaveBeenCalled();
+  });
+
+  it("reuses a ready safe without repeating setup", async () => {
+    const { storage, user } = await loginAndReachVaults();
+    await user.click(screen.getByTestId("nav-key-safe"));
+    expect(await screen.findByTestId("key-safe-ready")).toBeVisible();
+    expect(storage.keySafe.setup).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
   });
 });

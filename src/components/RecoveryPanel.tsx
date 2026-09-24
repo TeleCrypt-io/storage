@@ -1,36 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useStorage } from "../context/StorageContext";
+import type { TeleCryptIOStorage } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
-import * as core from "../lib/core";
-import type { RecoveryStatus } from "../lib/core";
 
-type AccountRecoveryStatus =
-  | "configured"
-  | "configured-not-ready"
-  | "not-configured"
-  | "unknown";
+type SafeStatus = Awaited<ReturnType<TeleCryptIOStorage["keySafe"]["getStatus"]>>;
+const SAFE_OPERATION_TIMEOUT_MS = 30_000;
+const KEY_LOSS_WARNING = "Save this Recovery Key somewhere safe. If you lose this key and access to all your signed-in devices, your files may become permanently unreadable. Resetting your account password will not restore access.";
 
-const RECOVERY_OPERATION_TIMEOUT_MS = 30_000;
-
-function classifyRecoveryStatus(status: RecoveryStatus): AccountRecoveryStatus {
-  // Match the SDK's setup preflight: any existing default key, ready secret
-  // storage, or active backup means setup must not be offered again. The SDK's
-  // `state: "partial"` can also describe cross-signing that has no recovery
-  // configuration yet, so that state alone is not enough to hide setup.
-  const hasExistingConfiguration =
-    status.secretStorage.defaultKeyId !== null ||
-    status.secretStorage.ready ||
-    status.backupVersion !== null;
-  if (hasExistingConfiguration) {
-    return status.state === "ready" ? "configured" : "configured-not-ready";
-  }
-  return "not-configured";
-}
-
-function withRecoveryDeadline<T>(
+function withSafeDeadline<T>(
   accountSignal: AbortSignal | null,
-  label: string,
   operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
@@ -40,9 +19,10 @@ function withRecoveryDeadline<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      controller.abort(new DOMException(`${label} timed out`, "TimeoutError"));
-      reject(new Error(`${label} timed out`));
-    }, RECOVERY_OPERATION_TIMEOUT_MS);
+      const error = new DOMException("Decryption Key Safe operation timed out. Check its status before retrying.", "TimeoutError");
+      controller.abort(error);
+      reject(error);
+    }, SAFE_OPERATION_TIMEOUT_MS);
   });
   return Promise.race([
     withAccountSignal(controller.signal, () => operation(controller.signal)),
@@ -53,322 +33,171 @@ function withRecoveryDeadline<T>(
   });
 }
 
-export function RecoveryPanel() {
+/** Stays mounted while Files is open so readiness has one account-scoped owner. */
+export function RecoveryPanel({
+  hidden = false,
+  onReadinessChange,
+}: {
+  hidden?: boolean;
+  onReadinessChange: (ready: boolean) => void;
+}) {
   const { storage, accountSignal } = useStorage();
-  const [recoveryStatus, setRecoveryStatus] = useState<AccountRecoveryStatus | null>(null);
-  const [setupIndeterminate, setSetupIndeterminate] = useState(false);
-  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [safeStatus, setSafeStatus] = useState<SafeStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restoreKeyInput, setRestoreKeyInput] = useState("");
-  const [restoreResult, setRestoreResult] = useState<{ imported: number; total: number } | null>(
-    null,
-  );
-  const [confirmedSaved, setConfirmedSaved] = useState(false);
-  const [restoreExpanded, setRestoreExpanded] = useState(false);
-  const identityRef = useRef<typeof storage>(null);
-  const identityGenerationRef = useRef(0);
+  const [copied, setCopied] = useState(false);
+  const identityRef = useRef(storage);
+  const generationRef = useRef(0);
   const mutationInFlightRef = useRef(false);
-  // Keep identity current during render so callbacks cannot observe a prior identity between
-  // render and effect cleanup.
   // oxlint-disable-next-line react/refs
   identityRef.current = storage;
 
-  function clearDisplayedRecoveryKey(): void {
-    setRecoveryKey(null);
-    setConfirmedSaved(false);
+  function isCurrent(expectedStorage: typeof storage, generation: number): boolean {
+    return !(accountSignal?.aborted ?? false) &&
+      generationRef.current === generation && identityRef.current === expectedStorage;
   }
 
-  // Clear all account-specific recovery state before the next identity's asynchronous status
-  // request can complete.
-  // oxlint-disable react/set-state-in-effect
+  const refreshStatus = useCallback(async () => {
+    if (!storage) return;
+    const generation = generationRef.current;
+    try {
+      const status = await withSafeDeadline(accountSignal, (signal) => storage.keySafe.getStatus(signal));
+      if (!isCurrent(storage, generation)) return;
+      if (status.state === "ready") {
+        await withSafeDeadline(accountSignal, (signal) => storage.startSync(signal));
+        if (!isCurrent(storage, generation)) return;
+      }
+      setSafeStatus(status);
+      setError(null);
+      onReadinessChange(status.state === "ready");
+    } catch (err) {
+      if (!isCurrent(storage, generation)) return;
+      setSafeStatus(null);
+      setError(formatOperationError(err));
+      onReadinessChange(false);
+    }
+    // isCurrent is the account-scoped guard for this request.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountSignal, storage, onReadinessChange]);
+
   useEffect(() => {
-    identityRef.current = storage;
-    identityGenerationRef.current += 1;
+    generationRef.current += 1;
     mutationInFlightRef.current = false;
-    setRecoveryStatus(null);
-    setSetupIndeterminate(false);
-    setRecoveryKey(null);
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSafeStatus(null);
     setError(null);
     setBusy(false);
     setRestoreKeyInput("");
-    setRestoreResult(null);
-    setConfirmedSaved(false);
-    setRestoreExpanded(false);
-    return () => {
-      identityGenerationRef.current += 1;
-    };
-  }, [storage]);
-  // oxlint-enable react/set-state-in-effect
-
-  function isCurrent(expectedStorage: typeof storage, generation: number): boolean {
-    return (
-      !(accountSignal?.aborted ?? false) &&
-      identityGenerationRef.current === generation &&
-      identityRef.current === expectedStorage
-    );
-  }
-
-  const refreshStatus = useCallback(async (reconcile = false) => {
-    const expectedStorage = storage;
-    if (!expectedStorage) return;
-    const generation = identityGenerationRef.current;
-    try {
-      const status = await withRecoveryDeadline(
-        accountSignal,
-        "Recovery status check",
-        (signal) => expectedStorage.keys.getStatus(signal),
-      );
-      const nextStatus = classifyRecoveryStatus(status);
-      if (!isCurrent(expectedStorage, generation)) return;
-      setRecoveryStatus(nextStatus);
-      setRestoreExpanded(nextStatus === "configured-not-ready");
-      if (reconcile) {
-        setSetupIndeterminate(false);
-        setError(null);
-      }
-    } catch (err) {
-      if (isCurrent(expectedStorage, generation)) {
-        setRecoveryStatus("unknown");
-        setError(formatOperationError(err));
-      }
-    }
-    // isCurrent is intentionally a render-local identity guard.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountSignal, storage]);
-
-  useEffect(() => {
-    // The status callback is guarded before updating state.
-    // oxlint-disable-next-line react/set-state-in-effect
+    setCopied(false);
+    onReadinessChange(false);
     void refreshStatus();
-  }, [refreshStatus]);
+    return () => { generationRef.current += 1; };
+  }, [refreshStatus, onReadinessChange]);
 
-  async function handleSetup() {
+  async function mutate(operation: (signal: AbortSignal) => Promise<unknown>) {
     const expectedStorage = storage;
-    const generation = identityGenerationRef.current;
-    if (
-      !expectedStorage ||
-      !isCurrent(expectedStorage, generation) ||
-      mutationInFlightRef.current
-    ) return;
+    const generation = generationRef.current;
+    if (!expectedStorage || !isCurrent(expectedStorage, generation) || mutationInFlightRef.current) return;
     mutationInFlightRef.current = true;
     setBusy(true);
     setError(null);
-    setConfirmedSaved(false);
     try {
-      const result = await core.setupRecovery(expectedStorage, {
-        signal: accountSignal ?? undefined,
-        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
-      });
-      if (!isCurrent(expectedStorage, generation)) return;
-      setRecoveryKey(result.recoveryKey);
-      setRecoveryStatus("configured");
+      await withSafeDeadline(accountSignal, operation);
+      if (isCurrent(expectedStorage, generation)) await refreshStatus();
     } catch (err) {
-      if (err instanceof core.RecoveryAlreadyConfiguredError) {
-        await refreshStatus(true);
-        if (isCurrent(expectedStorage, generation)) {
-          setSetupIndeterminate(false);
-          setRecoveryStatus("configured-not-ready");
-          setRestoreExpanded(true);
-          setError("Recovery is already configured. Restore with the existing Recovery Key.");
-        }
-        return;
-      }
       if (isCurrent(expectedStorage, generation)) {
-        setSetupIndeterminate(true);
-        setRecoveryStatus("unknown");
+        // A timed-out request may have changed remote state. Read it before offering another setup.
+        setSafeStatus(null);
         setError(formatOperationError(err));
+        onReadinessChange(false);
       }
     } finally {
-      if (identityGenerationRef.current === generation) mutationInFlightRef.current = false;
-      if (isCurrent(expectedStorage, generation)) {
-        setBusy(false);
-      }
-    }
-  }
-
-  async function handleReconcile() {
-    const expectedStorage = storage;
-    const generation = identityGenerationRef.current;
-    if (
-      !expectedStorage ||
-      !isCurrent(expectedStorage, generation) ||
-      mutationInFlightRef.current
-    ) return;
-    mutationInFlightRef.current = true;
-    setBusy(true);
-    try {
-      await refreshStatus(true);
-    } finally {
-      if (identityGenerationRef.current === generation) mutationInFlightRef.current = false;
+      if (generationRef.current === generation) mutationInFlightRef.current = false;
       if (isCurrent(expectedStorage, generation)) setBusy(false);
     }
   }
 
-  async function handleRestore(e: FormEvent) {
-    e.preventDefault();
-    const expectedStorage = storage;
-    const generation = identityGenerationRef.current;
-    if (
-      !expectedStorage ||
-      !isCurrent(expectedStorage, generation) ||
-      mutationInFlightRef.current
-    ) return;
-    mutationInFlightRef.current = true;
-    setBusy(true);
-    setError(null);
-    setRestoreResult(null);
-    const recoveryKey = restoreKeyInput.trim();
+  async function restore(event: FormEvent) {
+    event.preventDefault();
+    const key = restoreKeyInput.trim();
     try {
-      const result = await core.restoreRecovery(expectedStorage, recoveryKey, {
-        signal: accountSignal ?? undefined,
-        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
-      });
-      if (!isCurrent(expectedStorage, generation)) return;
-      setRestoreResult(result);
-      setRestoreKeyInput("");
-      await refreshStatus(true);
-    } catch (err) {
-      if (isCurrent(expectedStorage, generation)) setError(formatOperationError(err));
+      await mutate((signal) => storage!.keySafe.restore(key, signal));
     } finally {
-      if (identityGenerationRef.current === generation) mutationInFlightRef.current = false;
-      if (isCurrent(expectedStorage, generation)) {
-        setRestoreKeyInput("");
-        setBusy(false);
-      }
+      if (identityRef.current === storage) setRestoreKeyInput("");
     }
   }
 
-  const showRestoreSection = !recoveryKey && recoveryStatus !== null && recoveryStatus !== "unknown";
+  const recoveryKey = safeStatus?.state === "confirmation-required" ? safeStatus.recoveryKey : undefined;
 
-  async function finishRecoverySetup() {
-    const expectedStorage = storage;
-    const generation = identityGenerationRef.current;
-    if (!isCurrent(expectedStorage, generation)) return;
-    clearDisplayedRecoveryKey();
+  async function copyKey() {
+    if (!recoveryKey) return;
+    const generation = generationRef.current;
+    try {
+      await navigator.clipboard.writeText(recoveryKey);
+      if (isCurrent(storage, generation)) { setCopied(true); setError(null); }
+    } catch (err) {
+      if (isCurrent(storage, generation)) setError(formatOperationError(err));
+    }
+  }
+
+  function saveKey() {
+    if (!recoveryKey) return;
+    let url: string | undefined;
+    try {
+      url = URL.createObjectURL(new Blob([`${recoveryKey}\n`], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "decryption-key-safe.txt";
+      link.click();
+      setError(null);
+    } catch (err) {
+      setError(formatOperationError(err));
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
   }
 
   return (
-    <div className="panel">
-      <h2>Recovery</h2>
-
-      {recoveryStatus === null && !recoveryKey && (
-        <p className="muted" data-testid="recovery-loading">
-          Checking account recovery status…
-        </p>
+    <div className="panel" hidden={hidden} data-testid="key-safe-panel">
+      <h2>Decryption Key Safe</h2>
+      {!safeStatus && !error && <p className="muted" data-testid="key-safe-loading">Checking Decryption Key Safe…</p>}
+      {!safeStatus && error && (
+        <button className="btn" disabled={busy} onClick={() => void refreshStatus()} data-testid="key-safe-retry">
+          Check Decryption Key Safe status
+        </button>
       )}
-
-      {recoveryStatus === "unknown" && !recoveryKey && (
-        <div data-testid="recovery-status-unknown">
-          <p className="error">
-            {setupIndeterminate
-              ? "Recovery setup could not be confirmed. Do not retry until the account status is reconciled."
-              : error ?? "Account recovery status is unavailable."}
-          </p>
-          {setupIndeterminate && (
-            <button className="btn" type="button" onClick={() => void handleReconcile()} disabled={busy} data-testid="reconcile-recovery">
-              {busy ? "Checking recovery status…" : "Reconcile recovery status"}
-            </button>
-          )}
-        </div>
-      )}
-
-      {recoveryStatus === "not-configured" && !recoveryKey && !setupIndeterminate && (
-        <div data-testid="recovery-not-setup">
-          <p>Recovery is not configured on this account. Restore with an existing Recovery Key on a new device.</p>
-          <p className="muted">Only set up recovery here when this is the first trusted device for the account.</p>
-          <button className="btn btn-primary" onClick={handleSetup} disabled={busy} data-testid="setup-recovery">
-            {busy ? "Setting up recovery…" : "Set up recovery on this device"}
+      {safeStatus?.state === "setup-required" && (
+        <div data-testid="key-safe-setup-required">
+          <p>Set up your Decryption Key Safe before using Storage. It stores encrypted copies of the keys needed to read your files.</p>
+          <p>{KEY_LOSS_WARNING}</p>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void mutate((signal) => storage!.keySafe.setup(signal))} data-testid="setup-key-safe">
+            {busy ? "Setting up…" : "Set up the Decryption Key Safe"}
           </button>
         </div>
       )}
-
       {recoveryKey && (
-        <div className="warning" data-testid="recovery-key-display">
-          <p>
-            <strong>Save this Recovery Key now.</strong> It is the only way to recover your files
-            on a new device — it will not be shown again.
-          </p>
-          <code data-testid="recovery-key-value">{recoveryKey}</code>
-          <p className="muted">Select and save this key using your password manager or another trusted method.</p>
-          <label className="recovery-confirm-label">
-            <input
-              type="checkbox"
-              checked={confirmedSaved}
-              onChange={(e) => setConfirmedSaved(e.target.checked)}
-              data-testid="confirm-saved-recovery-key"
-            />
-            I've saved my recovery key
-          </label>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!confirmedSaved}
-            onClick={() => void finishRecoverySetup()}
-            data-testid="recovery-setup-done"
-          >
-            Done
+        <div className="warning" data-testid="key-safe-key-display">
+          <p>{KEY_LOSS_WARNING}</p>
+          <code data-testid="key-safe-recovery-key">{recoveryKey}</code>
+          <p>Keep it outside this browser, in a password manager or another safe place you can access after losing this device.</p>
+          <button className="btn" type="button" onClick={() => void copyKey()} data-testid="copy-key-safe-key">{copied ? "Copied" : "Copy key"}</button>{" "}
+          <button className="btn" type="button" onClick={saveKey} data-testid="save-key-safe-key">Save key</button>{" "}
+          <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void mutate((signal) => storage!.keySafe.confirmSaved(signal))} data-testid="confirm-saved-key">
+            {busy ? "Completing setup…" : "I've saved my key"}
           </button>
         </div>
       )}
-
-      {showRestoreSection && (
-        <section className="restore-section">
-          {recoveryStatus === "configured" && (
-            <p data-testid="recovery-active">Recovery is configured for this account.</p>
-          )}
-          {recoveryStatus === "configured-not-ready" && (
-            <div data-testid="recovery-configured-not-ready">
-              <p>Recovery is configured for this account, but this device is not ready to use it.</p>
-              <p>Restore with the existing Recovery Key to use recovery on this device.</p>
-            </div>
-          )}
-
-          <button
-            type="button"
-            className="link restore-toggle"
-            onClick={() => setRestoreExpanded((v) => !v)}
-            aria-expanded={restoreExpanded}
-            data-testid="restore-expand"
-          >
-            {restoreExpanded ? "Hide restore" : "Restore with Recovery Key"}
-          </button>
-
-          {restoreExpanded && (
-            <form onSubmit={handleRestore} className="restore-form">
-              <label htmlFor="restore-key-textarea">Recovery Key</label>
-              <textarea
-                className="tc-field"
-                id="restore-key-textarea"
-                rows={4}
-                value={restoreKeyInput}
-                onChange={(e) => setRestoreKeyInput(e.target.value)}
-                data-testid="restore-key-input"
-              />
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={busy || !restoreKeyInput.trim()}
-                data-testid="restore-submit"
-              >
-                {busy ? "Restoring…" : "Restore"}
-              </button>
-            </form>
-          )}
-
-          {restoreResult && (
-            <p data-testid="restore-result">
-              Imported {restoreResult.imported} of {restoreResult.total} keys.
-            </p>
-          )}
-        </section>
+      {safeStatus?.state === "restore-required" && (
+        <form className="restore-form" onSubmit={(event) => void restore(event)} data-testid="key-safe-restore-required">
+          <p>Your account already has a Decryption Key Safe. Enter your saved Recovery Key to set up this login and restore access to your files.</p>
+          <label htmlFor="restore-key-input">Recovery Key</label>
+          <textarea className="tc-field" id="restore-key-input" rows={4} value={restoreKeyInput} onChange={(event) => setRestoreKeyInput(event.target.value)} data-testid="restore-key-input" />
+          <button className="btn btn-primary" type="submit" disabled={busy || !restoreKeyInput.trim()} data-testid="restore-key-submit">{busy ? "Restoring…" : "Restore access"}</button>
+        </form>
       )}
-
-      {error && (
-        <p className="error" data-testid="recovery-error">
-          {error}
-        </p>
-      )}
+      {safeStatus?.state === "ready" && <p data-testid="key-safe-ready">Your Decryption Key Safe is ready.</p>}
+      {error && <p className="error" data-testid="key-safe-error">{error}</p>}
     </div>
   );
 }

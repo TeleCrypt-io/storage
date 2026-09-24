@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import "./App.css";
 import { StorageProvider, useStorage } from "./context/StorageContext";
 import { LoginScreen } from "./components/LoginScreen";
@@ -56,7 +56,12 @@ function ConnectingScreen() {
 }
 
 function Shell() {
-  const { status, session, error, logout, logoutPending } = useStorage();
+  const { status, session, storage, error, logout, logoutPending } = useStorage();
+  const [readyStorage, setReadyStorage] = useState<typeof storage>(null);
+  const keySafeReady = storage !== null && readyStorage === storage;
+  const onReadinessChange = useCallback((ready: boolean) => {
+    setReadyStorage(ready ? storage : null);
+  }, [storage]);
   const [view, setView] = useState<View>("vaults");
 
   if (status === "signed-out" || status === "error") {
@@ -83,6 +88,7 @@ function Shell() {
             className={view === "vaults" ? "active" : ""}
             onClick={() => setView("vaults")}
             data-testid="nav-vaults"
+            disabled={!keySafeReady}
           >
             Files
           </button>
@@ -90,9 +96,9 @@ function Shell() {
             type="button"
             className={view === "recovery" ? "active" : ""}
             onClick={() => setView("recovery")}
-            data-testid="nav-recovery"
+            data-testid="nav-key-safe"
           >
-            Recovery
+            Decryption Key Safe
           </button>
         </nav>
         <button
@@ -112,12 +118,10 @@ function Shell() {
           </p>
         )}
         <Suspense fallback={<p className="muted">Loading encrypted storage…</p>}>
-          {view === "recovery" && (
-            <div className="recovery-wrap">
-              <RecoveryPanel />
-            </div>
-          )}
-          {view === "vaults" && (
+          <div className="recovery-wrap" hidden={keySafeReady && view === "vaults"}>
+            <RecoveryPanel hidden={keySafeReady && view === "vaults"} onReadinessChange={onReadinessChange} />
+          </div>
+          {keySafeReady && view === "vaults" && (
             <FileManager />
           )}
         </Suspense>

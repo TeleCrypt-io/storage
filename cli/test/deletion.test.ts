@@ -41,7 +41,10 @@ describe("CLI authoritative deletion refusals", () => {
     ["vault", ["storage", "vault", "delete"], "deleteVault"],
     ["folder", ["storage", "vault", "subfolder", "delete"], "deleteFolder"],
   ] as const)("returns the SDK nonempty %s refusal without reporting deletion", async (_kind, command, operation) => {
-    const storage = {};
+    const storage = {
+      startSync: vi.fn().mockResolvedValue(undefined),
+      keySafe: { getStatus: vi.fn().mockResolvedValue({ state: "ready" }) },
+    };
     const treeId = "!nonempty:example.test";
     mocks.close.mockResolvedValue(undefined);
     mocks.openStorage.mockResolvedValue({
@@ -89,7 +92,10 @@ describe("CLI authoritative deletion refusals", () => {
   });
 
   it("reports the SDK failure and storage cleanup failure together", async () => {
-    const storage = {};
+    const storage = {
+      startSync: vi.fn().mockResolvedValue(undefined),
+      keySafe: { getStatus: vi.fn().mockResolvedValue({ state: "ready" }) },
+    };
     mocks.openStorage.mockResolvedValue({
       storage,
       run: vi.fn(async (action: (signal: AbortSignal) => Promise<unknown>) =>

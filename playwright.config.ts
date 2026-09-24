@@ -28,7 +28,7 @@ export default defineConfig({
     trace: "on",
   },
   webServer: {
-    command: "npx vite --port 5173 --strictPort",
+    command: "npx vite --mode e2e --port 5173 --strictPort",
     url: "http://localhost:5173",
     reuseExistingServer: true,
     timeout: 30_000,

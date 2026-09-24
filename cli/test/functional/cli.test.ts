@@ -69,48 +69,44 @@ interface LocalMasUser {
 async function loginProfile(
   dir: string,
   user: LocalMasUser,
-): Promise<{ userId: string; username: string; password: string }> {
+  timeoutMs = 60_000,
+): Promise<{ userId: string; username: string; password: string; keySafeState: string }> {
   let approval: Promise<void> | undefined;
   let approvalFailure: Error | undefined;
   const approvalAbort = new AbortController();
-  const approvalDeadline = setTimeout(
-    () => approvalAbort.abort(new Error("local MAS device approval timed out after 30s")),
-    30_000,
-  );
-  let result;
-  try {
-    result = await runCli(
-      ["storage", "login", "--homeserver", HOMESERVER, "--server-name", "localhost:8008", "--no-browser", "--json"],
-      {
-        TELECRYPT_IO_STORAGE_HOME: dir,
-      },
-      {
-        abortSignal: approvalAbort.signal,
-        onStderr(stderr) {
-          const match = stderr.match(/and enter code: ([^\s]+)/);
-          if (!match || approval) return;
-          approval = approveDeviceCodeViaHttp(user.username, user.password, match[1], approvalAbort.signal).catch((err) => {
+  const result = await runCli(
+    ["storage", "login", "--homeserver", HOMESERVER, "--server-name", "localhost:8008", "--no-browser", "--json"],
+    {
+      TELECRYPT_IO_STORAGE_HOME: dir,
+    },
+    {
+      timeoutMs,
+      abortSignal: approvalAbort.signal,
+      onStderr(stderr) {
+        const match = stderr.match(/and enter code: ([^\s]+)/);
+        if (!match || approval) return;
+        approval = approveDeviceCodeViaHttp(user.username, user.password, match[1], approvalAbort.signal)
+          .catch((err) => {
             approvalFailure = new Error(`local MAS device approval failed: ${(err as Error).message}`);
             approvalAbort.abort(approvalFailure);
           });
-        },
       },
-    );
-  } finally {
-    clearTimeout(approvalDeadline);
-  }
+    },
+  );
   if (!approval) throw new Error(`CLI did not print an OIDC device code: ${result.stderr}`);
   await approval;
   if (approvalFailure) throw approvalFailure;
   expect(result.code).toBe(0);
-  const json = JSON.parse(result.stdout) as { userId: string };
-  return { userId: json.userId, ...user };
+  const json = JSON.parse(result.stdout) as { userId: string; keySafe?: { state?: string } };
+  // A fresh login can have different Safe state from the profile used to
+  // create the account. Keep the current CLI response authoritative.
+  return { ...user, userId: json.userId, keySafeState: json.keySafe?.state ?? "unknown" };
 }
 
 async function registerProfile(
   dir: string,
   prefix: string,
-): Promise<{ userId: string; username: string; password: string }> {
+): Promise<{ userId: string; username: string; password: string; recoveryKey: string }> {
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
   await registerUserInMas(username, password);
@@ -119,10 +115,59 @@ async function registerProfile(
   // pending file for post-investigation cleanup to revoke.
   markProfileForRemoteCleanup(dir);
   const profile = await loginProfile(dir, { username, password });
-  return profile;
+  expect(profile.keySafeState).toBe("setup-required");
+  const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+  const setup = await cliJson(["storage", "key-safe", "setup"], env);
+  expect(setup.code).toBe(0);
+  expect(setup.json).toMatchObject({ state: "confirmation-required", confirmationRequired: true });
+  const recoveryKey = setup.json.recoveryKey as string;
+  expect(recoveryKey).toBeTruthy();
+  const confirmed = await cliJson(["storage", "key-safe", "confirm-saved"], env);
+  expect(confirmed.code).toBe(0);
+  expect(confirmed.json).toMatchObject({ state: "ready" });
+  return { ...profile, recoveryKey };
 }
 
 describe("CLI", () => {
+  it("requires explicit Recovery Key preservation before normal Storage commands", async () => {
+    const dir = freshProfileDir("key-safe-gate");
+    const username = randomUser("key-safe");
+    const password = "pw_" + Math.random().toString(36).slice(2, 10);
+    await registerUserInMas(username, password);
+    markProfileForRemoteCleanup(dir);
+    const login = await loginProfile(dir, { username, password });
+    expect(login.keySafeState).toBe("setup-required");
+    const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+
+    const blocked = await cliJson(["storage", "vault", "list"], env);
+    expect(blocked.code).not.toBe(0);
+    expect(blocked.json.error).toContain("Decryption Key Safe is not ready (setup-required)");
+
+    const savedKeyPath = artifactPath("decryption-key-safe.txt");
+    const setup = await cliJson(["storage", "key-safe", "setup", "--output", savedKeyPath], env);
+    expect(setup.code).toBe(0);
+    expect(setup.json).toMatchObject({ state: "confirmation-required", confirmationRequired: true, savedTo: savedKeyPath });
+    expect(fs.statSync(savedKeyPath).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(savedKeyPath, "utf8").trim()).toBeTruthy();
+
+    const collision = await cliJson(["storage", "key-safe", "setup", "--output", savedKeyPath], env);
+    expect(collision.code).not.toBe(0);
+    expect(collision.json.error).toContain("already exists");
+    const resumed = await cliJson(["storage", "key-safe", "setup"], env);
+    expect(resumed.code).toBe(0);
+    expect(resumed.json).toMatchObject({ state: "confirmation-required" });
+    expect(resumed.json.recoveryKey).toBe(fs.readFileSync(savedKeyPath, "utf8").trim());
+
+    const stillBlocked = await cliJson(["storage", "vault", "list"], env);
+    expect(stillBlocked.code).not.toBe(0);
+    expect(stillBlocked.json.error).toContain("confirmation-required");
+
+    const confirmed = await cliJson(["storage", "key-safe", "confirm-saved"], env);
+    expect(confirmed.code).toBe(0);
+    const ready = await cliJson(["storage", "vault", "list"], env);
+    expect(ready.code).toBe(0);
+  }, 120000);
+
   it("fences a concurrent read command while a profile transaction owns the lock", async () => {
     const dir = freshProfileDir("concurrent-profile");
     const session: Session = {
@@ -212,10 +257,6 @@ describe("CLI", () => {
       // that the Matrix session + megolm keys survive across process exits.
       await registerProfile(dir, "persist");
 
-      const recoverySetup = await cliJson(["storage", "recovery", "setup"], env);
-      expect(recoverySetup.code).toBe(0);
-      expect(typeof recoverySetup.json.recoveryKey).toBe("string");
-
       const vaultRes = await cliJson(["storage", "vault", "create", "PersistVault"], env);
       expect(vaultRes.code).toBe(0);
       const vaultId = vaultRes.json.id as string;
@@ -243,7 +284,7 @@ describe("CLI", () => {
       const downloadedBytes = fs.readFileSync(destPath, "utf8");
       expect(downloadedBytes).toBe(originalBytes);
     },
-    60000,
+    180000,
   );
 
   it(
@@ -297,7 +338,7 @@ describe("CLI", () => {
       const vaults = listC.json.vaults as { id: string }[];
       expect(vaults.some((f) => f.id === vaultId)).toBe(false);
     },
-    90000,
+    180000,
   );
 
   it(
@@ -334,11 +375,11 @@ describe("CLI", () => {
       expect(viewer?.role).toBe("viewer");
       expect(viewer?.membership).toBe("join");
     },
-    60000,
+    120000,
   );
 
   it(
-    "CLI.4 recovery restore on a fresh profile (new device) recovers a file via the CLI",
+    "CLI.4 Safe restore on a fresh profile (new client login) recovers a file via the CLI",
     async () => {
       const dir1 = freshProfileDir("recoverDev1");
       const env1 = { TELECRYPT_IO_STORAGE_HOME: dir1 };
@@ -354,9 +395,7 @@ describe("CLI", () => {
       const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], env1);
       const fileId = uploadRes.json.id as string;
 
-      const setupRes = await cliJson(["storage", "recovery", "setup"], env1);
-      expect(setupRes.code).toBe(0);
-      const recoveryKey = setupRes.json.recoveryKey as string;
+      const recoveryKey = user.recoveryKey;
       expect(recoveryKey).toBeTruthy();
 
       // Give the key-backup upload a moment to actually land server-side —
@@ -387,32 +426,19 @@ describe("CLI", () => {
       markProfileForRemoteCleanup(dir2);
       const newDevice = await loginProfile(dir2, user);
       expect(newDevice.userId).toBe(user.userId);
+      expect(newDevice.keySafeState).toBe("restore-required");
 
-      // Negative control: before restoring, device 2 must NOT be able to
-      // decrypt the file — proves the new device really does start empty.
+      // Mandatory onboarding prevents storage requests until the new client
+      // login has restored the existing Safe.
       const destPath = artifactPath("recovered.txt");
-      const beforeRestore = await waitFor(
-        async (attemptSignal) => {
-          // Poll until the vault/file are at least *visible* to device 2
-          // (independent of decryption), so the eventual failure below is a
-          // genuine decryption failure, not "vault not found yet".
-          const listing = await cliJson(["storage", "file", "list", vaultId], env2, { abortSignal: attemptSignal });
-          const files = (listing.json.files as { id: string }[] | undefined) ?? [];
-          return files.some((f) => f.id === fileId) ? listing : null;
-        },
-        { label: "device 2 sees the file", timeoutMs: 20000 },
-      );
-      expect(beforeRestore.code).toBe(0);
-      const failedDownload = await cliJson(
-        ["storage", "file", "download", vaultId, fileId, destPath],
-        env2,
-      );
-      expect(failedDownload.code).not.toBe(0);
+      const beforeRestore = await cliJson(["storage", "file", "list", vaultId], env2);
+      expect(beforeRestore.code).not.toBe(0);
+      expect(beforeRestore.json.error).toContain("restore-required");
 
-      // Now restore from the Recovery Key and confirm the file recovers,
+      // Restore from the Recovery Key and confirm the file recovers,
       // byte-identical to what device 1 originally uploaded.
       const restoreRes = await cliJson(
-        ["storage", "recovery", "restore", "--key-stdin"],
+        ["storage", "key-safe", "restore", "--key-stdin"],
         env2,
         { stdin: recoveryKey },
       );
@@ -429,7 +455,7 @@ describe("CLI", () => {
       expect(recovered.code).toBe(0);
       expect(fs.readFileSync(destPath, "utf8")).toBe(originalBytes);
     },
-    90000,
+    180000,
   );
 
   it(
@@ -510,7 +536,7 @@ describe("CLI", () => {
       expect(deleteParent.code).toBe(0);
       expect(deleteParent.json).toMatchObject({ id: parentId, deleted: true });
     },
-    120000,
+    240000,
   );
 
   describe("CLI.6 error paths: clean non-zero exit + JSON error", () => {
@@ -538,19 +564,26 @@ describe("CLI", () => {
       expect(res.stdout.trim()).toBe("");
     });
 
-    it("garbage recovery key", async () => {
-      const dir = freshProfileDir("badrecovery");
-      await registerProfile(dir, "badrecovery");
-      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+    it(
+      "rejects a wrong Recovery Key without changing the existing Safe",
+      async () => {
+        const ownerDir = freshProfileDir("wrong-key-owner");
+        const owner = await registerProfile(ownerDir, "wrongkey");
+        const dir = freshProfileDir("wrong-key-device");
+        markProfileForRemoteCleanup(dir);
+        await loginProfile(dir, owner);
 
-      const res = await cliJson(
-        ["storage", "recovery", "restore", "--key-stdin"],
-        env,
-        { stdin: "not a real recovery key" },
-      );
-      expect(res.code).not.toBe(0);
-      expect(typeof res.json.error).toBe("string");
-    });
+        const res = await cliJson(
+          ["storage", "key-safe", "restore", "--key-stdin"],
+          { TELECRYPT_IO_STORAGE_HOME: dir },
+          { stdin: "not a real recovery key" },
+        );
+        expect(res.code).not.toBe(0);
+        expect(typeof res.json.error).toBe("string");
+        expect(res.json.error).not.toContain("setup-required");
+      },
+      120000,
+    );
 
     it(
       "download of a nonexistent file",
@@ -569,10 +602,10 @@ describe("CLI", () => {
         expect(res.code).not.toBe(0);
         expect(typeof res.json.error).toBe("string");
       },
-      // A fresh CLI process must initialize crypto and sync with the
-      // disposable test server. That server may be slow; revisit this 60s
-      // budget if it becomes consistently faster.
-      60000,
+      // This starts a registered client, creates a vault in a separate CLI
+      // process, then checks a failed lookup in another process. Allow the
+      // disposable Matrix server to complete each startup and sync.
+      180000,
     );
 
     it("whoami with no session", async () => {

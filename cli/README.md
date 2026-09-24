@@ -13,7 +13,8 @@ The CLI runs on Linux and requires Node.js `>=24.20.0`; release tooling verifies
 version and the bundled npm `11.19.0`.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the
-`telecrypt-io storage` command group: login, recovery, shared vaults and nested folders, and file
+`telecrypt-io storage` command group: login, mandatory Decryption Key Safe setup or restoration,
+shared vaults and nested folders, and file
 upload, download, rename, and deletion.
 
 **Distribution:** the standalone CLI is available only as an exact
@@ -33,9 +34,9 @@ This installs the `telecrypt-io` executable. The library source is in
 ## Usage
 
 The CLI supports MAS/OIDC device authorization only; it never sends a Matrix login password.
-Recovery-key setup/export is a supported product feature for restoring encrypted keys on a new
-device. See the [canonical CLI reference](./CLI.md) for commands, profile handling, JSON output,
-sharing, file operations, and recovery.
+The Decryption Key Safe must be set up and its Recovery Key preserved before using Storage. A new
+client login to an existing account must restore the Safe first. See the [canonical CLI reference](./CLI.md)
+for commands, profile handling, JSON output, sharing, file operations, and Safe setup/restoration.
 
 See [CLI.md](./CLI.md) for the full command reference.
 

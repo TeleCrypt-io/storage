@@ -455,13 +455,6 @@
   resize: vertical;
 }
 
-.recovery-confirm-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0;
-  font-size: 0.9rem;
-}
 
 .row-name,
 .row-name-btn {

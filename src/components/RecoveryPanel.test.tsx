@@ -3,297 +3,145 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RecoveryPanel } from "./RecoveryPanel";
 import { useStorage } from "../context/StorageContext";
-import { RecoveryAlreadyConfiguredError, RecoverySetupAmbiguousError, type RecoveryStatus } from "../lib/core";
 
-vi.mock("../context/StorageContext", () => ({
-  useStorage: vi.fn(),
-}));
-
+vi.mock("../context/StorageContext", () => ({ useStorage: vi.fn() }));
+type Status = { state: "setup-required" | "confirmation-required" | "restore-required" | "ready"; recoveryKey?: string };
 function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
   return { promise, resolve };
 }
-
-const unconfiguredStatus: RecoveryStatus = {
-  state: "unconfigured",
-  crossSigning: {
-    publicKeysOnDevice: false,
-    privateKeysCachedLocally: false,
-    privateKeysInSecretStorage: false,
-  },
-  secretStorage: { ready: false, defaultKeyId: null },
-  backupVersion: null,
-};
-
-const configuredStatus: RecoveryStatus = {
-  state: "ready",
-  crossSigning: {
-    publicKeysOnDevice: true,
-    privateKeysCachedLocally: true,
-    privateKeysInSecretStorage: true,
-  },
-  secretStorage: { ready: true, defaultKeyId: "key" },
-  backupVersion: "1",
-};
-
-const partialConfiguredStatus: RecoveryStatus = {
-  state: "partial",
-  crossSigning: {
-    publicKeysOnDevice: true,
-    privateKeysCachedLocally: false,
-    privateKeysInSecretStorage: false,
-  },
-  secretStorage: { ready: false, defaultKeyId: null },
-  backupVersion: "1",
-};
-
-const partialCrossSigningStatus: RecoveryStatus = {
-  state: "partial",
-  crossSigning: {
-    publicKeysOnDevice: true,
-    privateKeysCachedLocally: true,
-    privateKeysInSecretStorage: false,
-  },
-  secretStorage: { ready: false, defaultKeyId: null },
-  backupVersion: null,
-};
-
-function fakeStorage(status: RecoveryStatus = unconfiguredStatus) {
-  const crypto = {
-    getKeyBackupInfo: vi.fn().mockResolvedValue(status.backupVersion ? {} : null),
-    getSecretStorageStatus: vi.fn().mockResolvedValue(status.secretStorage),
-  };
-  return {
-    keys: {
-      getStatus: vi.fn().mockResolvedValue(status),
-      setupRecovery: vi.fn().mockResolvedValue({ recoveryKey: "test-key" }),
-      restoreFromRecoveryKey: vi.fn().mockResolvedValue({ imported: 1, total: 1 }),
-    },
-    getClient: () => ({
-      getCrypto: () => crypto,
-      getAccountDataFromServer: vi.fn().mockResolvedValue(status.state === "ready" ? {} : null),
+function fakeStorage(initial: Status = { state: "setup-required" }) {
+  let status = initial;
+  return { startSync: vi.fn(async () => undefined), keySafe: {
+    getStatus: vi.fn(async () => status),
+    setup: vi.fn(async () => {
+      status = { state: "confirmation-required", recoveryKey: "test-key" };
+      return { recoveryKey: "test-key" };
     }),
-  };
+    confirmSaved: vi.fn(async () => { status = { state: "ready" }; return status; }),
+    restore: vi.fn(async () => { status = { state: "ready" }; return { imported: 1, total: 1, state: "ready" }; }),
+  } };
 }
-
 const useStorageMock = vi.mocked(useStorage);
+let ready = vi.fn<(ready: boolean) => void>();
+beforeEach(() => { vi.clearAllMocks(); ready = vi.fn(); });
 
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
-describe("RecoveryPanel identity", () => {
-  it("surfaces recovery status diagnostics", async () => {
+describe("Decryption Key Safe account lifecycle", () => {
+  it("surfaces status diagnostics and does not offer setup until status is known", async () => {
     const storage = fakeStorage();
-    vi.mocked(storage.keys.getStatus).mockRejectedValue(
-      new Error("recovery status backend detail"),
-    );
+    storage.keySafe.getStatus.mockRejectedValue(new Error("Status backend detail"));
     useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-error")).toHaveTextContent(
-      "recovery status backend detail",
-    );
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    expect(await screen.findByTestId("key-safe-error")).toHaveTextContent("Status backend detail");
+    expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
+    expect(ready).not.toHaveBeenCalledWith(true);
   });
 
-  it("discards a recovery result from the previous storage identity", async () => {
+  it("starts room history sync only after the Safe is ready", async () => {
+    const storage = fakeStorage({ state: "ready" });
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    await screen.findByTestId("key-safe-ready");
+    expect(storage.startSync).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenLastCalledWith(true);
+  });
+
+  it("does not start room history sync while the Safe needs setup or restore", async () => {
+    const storage = fakeStorage({ state: "restore-required" });
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    await screen.findByTestId("key-safe-restore-required");
+    expect(storage.startSync).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalledWith(true);
+  });
+
+  it("discards a setup result from the previous account", async () => {
     const storageA = fakeStorage();
-    const storageB = fakeStorage(configuredStatus);
-    const setup = deferred<{ recoveryKey: string }>();
-    vi.mocked(storageA.keys.setupRecovery).mockReturnValue(setup.promise as never);
+    const storageB = fakeStorage({ state: "ready" });
+    const pending = deferred<{ recoveryKey: string }>();
+    storageA.keySafe.setup.mockReturnValue(pending.promise);
     useStorageMock.mockReturnValue({ storage: storageA } as never);
-
-    const view = render(<RecoveryPanel />);
+    const view = render(<RecoveryPanel onReadinessChange={ready} />);
     const user = userEvent.setup();
-    await user.click(await screen.findByTestId("setup-recovery"));
-    await waitFor(() => expect(storageA.keys.setupRecovery).toHaveBeenCalled());
-
+    await user.click(await screen.findByTestId("setup-key-safe"));
     useStorageMock.mockReturnValue({ storage: storageB } as never);
-    view.rerender(<RecoveryPanel />);
-    expect(await screen.findByTestId("recovery-active")).toBeInTheDocument();
-
-    setup.resolve({ recoveryKey: "old-account-key" });
-    await waitFor(() => expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument());
-    expect(screen.getByTestId("recovery-active")).toBeInTheDocument();
+    view.rerender(<RecoveryPanel onReadinessChange={ready} />);
+    await screen.findByTestId("key-safe-ready");
+    await act(async () => pending.resolve({ recoveryKey: "old-account-key" }));
+    expect(screen.queryByTestId("key-safe-key-display")).not.toBeInTheDocument();
+    expect(screen.getByTestId("key-safe-ready")).toBeVisible();
+    expect(storageA.keySafe.getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("clears the displayed key when the identity changes", async () => {
-    const storageA = fakeStorage();
-    const storageB = fakeStorage(configuredStatus);
-    vi.mocked(storageA.keys.setupRecovery).mockResolvedValue({ recoveryKey: "old-key" });
+  it("clears the displayed key and restore input when the account changes", async () => {
+    const storageA = fakeStorage({ state: "confirmation-required", recoveryKey: "old-key" });
+    const storageB = fakeStorage({ state: "restore-required" });
     useStorageMock.mockReturnValue({ storage: storageA } as never);
-
-    const view = render(<RecoveryPanel />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId("setup-recovery"));
-    await screen.findByTestId("recovery-key-display");
-
+    const view = render(<RecoveryPanel onReadinessChange={ready} />);
+    await screen.findByTestId("key-safe-recovery-key");
     useStorageMock.mockReturnValue({ storage: storageB } as never);
-    view.rerender(<RecoveryPanel />);
-
-    await waitFor(() => expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument());
+    view.rerender(<RecoveryPanel onReadinessChange={ready} />);
+    expect(await screen.findByTestId("restore-key-input")).toHaveValue("");
+    expect(screen.queryByText("old-key")).not.toBeInTheDocument();
   });
 
-  it("does not expose a clipboard action for recovery keys", async () => {
+  it("reconciles an interrupted setup using SDK status without another create", async () => {
     const storage = fakeStorage();
-    vi.mocked(storage.keys.setupRecovery).mockResolvedValue({ recoveryKey: "done-key" });
+    storage.keySafe.setup.mockRejectedValue(new Error("Setup response interrupted"));
     useStorageMock.mockReturnValue({ storage } as never);
-
     const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("setup-recovery"));
-    expect(screen.queryByTestId("copy-recovery-key")).not.toBeInTheDocument();
-    await user.click(screen.getByTestId("confirm-saved-recovery-key"));
-    await user.click(screen.getByTestId("recovery-setup-done"));
-
-    await waitFor(() => expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument());
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    await user.click(await screen.findByTestId("setup-key-safe"));
+    expect(await screen.findByTestId("key-safe-error")).toHaveTextContent("Setup response interrupted");
+    expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
+    storage.keySafe.getStatus.mockResolvedValue({ state: "confirmation-required", recoveryKey: "same-key" });
+    await user.click(screen.getByTestId("key-safe-retry"));
+    expect(await screen.findByTestId("key-safe-recovery-key")).toHaveTextContent("same-key");
+    expect(storage.keySafe.setup).toHaveBeenCalledTimes(1);
   });
 
-  it("locks setup after an ambiguous result until status is reconciled", async () => {
-    const storage = fakeStorage();
-    const failure = new RecoverySetupAmbiguousError();
-    vi.mocked(storage.keys.setupRecovery).mockRejectedValue(failure);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("setup-recovery"));
-    expect(await screen.findByTestId("reconcile-recovery")).toBeInTheDocument();
-    expect(screen.getByTestId("recovery-error")).toHaveTextContent(failure.message);
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-
-    await user.click(screen.getByTestId("reconcile-recovery"));
-    expect(await screen.findByTestId("setup-recovery")).toBeInTheDocument();
-  });
-
-  it("times out setup and requires reconciliation before another attempt", async () => {
+  it("times out a setup and reads status before offering another operation", async () => {
     vi.useFakeTimers();
     try {
       const storage = fakeStorage();
-      const setup = deferred<{ recoveryKey: string }>();
-      vi.mocked(storage.keys.setupRecovery).mockReturnValue(setup.promise as never);
+      storage.keySafe.setup.mockReturnValue(new Promise(() => {}));
       useStorageMock.mockReturnValue({ storage } as never);
-      render(<RecoveryPanel />);
-
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-      fireEvent.click(screen.getByTestId("setup-recovery"));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
-      });
-
-      expect(screen.getByTestId("reconcile-recovery")).toBeInTheDocument();
-      expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
+      render(<RecoveryPanel onReadinessChange={ready} />);
+      await act(async () => { await Promise.resolve(); });
+      fireEvent.click(screen.getByTestId("setup-key-safe"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(screen.getByTestId("key-safe-retry")).toBeVisible();
+      expect(screen.queryByTestId("setup-key-safe")).not.toBeInTheDocument();
+      expect(ready).not.toHaveBeenCalledWith(true);
+    } finally { vi.useRealTimers(); }
   });
 
-  it("uses account-level status text and hides setup when recovery is configured", async () => {
-    const storage = fakeStorage(configuredStatus);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-active")).toHaveTextContent(
-      "Recovery is configured for this account.",
-    );
-    expect(screen.queryByTestId("recovery-not-setup")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /set up recovery/i })).not.toBeInTheDocument();
-    expect(screen.getByTestId("restore-expand")).toHaveTextContent("Restore with Recovery Key");
-  });
-
-  it("offers restore when a backup exists but this device is not ready", async () => {
-    const storage = fakeStorage(partialConfiguredStatus);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-configured-not-ready")).toHaveTextContent(
-      "Recovery is configured for this account, but this device is not ready to use it.",
-    );
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-    expect(screen.getByTestId("restore-key-input")).toBeInTheDocument();
-  });
-
-  it("does not hide setup for a partial cross-signing state without recovery configuration", async () => {
-    const storage = fakeStorage(partialCrossSigningStatus);
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("setup-recovery")).toBeInTheDocument();
-    expect(screen.queryByTestId("recovery-configured-not-ready")).not.toBeInTheDocument();
-  });
-
-  it("reconciles a setup race when the SDK reports an existing configuration", async () => {
+  it("does not make a completed late status request ready after account cancellation", async () => {
     const storage = fakeStorage();
-    vi.mocked(storage.keys.setupRecovery).mockRejectedValue(new RecoveryAlreadyConfiguredError());
-    vi.mocked(storage.keys.getStatus)
-      .mockResolvedValueOnce(unconfiguredStatus)
-      .mockResolvedValueOnce(partialConfiguredStatus);
-    useStorageMock.mockReturnValue({ storage } as never);
+    const pending = deferred<Status>();
+    const controller = new AbortController();
+    storage.keySafe.getStatus.mockReturnValue(pending.promise);
+    useStorageMock.mockReturnValue({ storage, accountSignal: controller.signal } as never);
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    await act(async () => {
+      controller.abort();
+      pending.resolve({ state: "ready" });
+    });
+    expect(ready).not.toHaveBeenCalledWith(true);
+  });
 
+  it("keeps the account locked and clears the entered key after failed restore", async () => {
+    const storage = fakeStorage({ state: "restore-required" });
+    storage.keySafe.restore.mockRejectedValue(new Error("Incorrect key"));
+    useStorageMock.mockReturnValue({ storage } as never);
     const user = userEvent.setup();
-    render(<RecoveryPanel />);
-    await user.click(await screen.findByTestId("setup-recovery"));
-
-    expect(await screen.findByTestId("recovery-configured-not-ready")).toBeInTheDocument();
-    expect(screen.getByTestId("restore-key-input")).toBeInTheDocument();
-    expect(screen.getByTestId("recovery-error")).toHaveTextContent(
-      "Recovery is already configured. Restore with the existing Recovery Key.",
-    );
+    render(<RecoveryPanel onReadinessChange={ready} />);
+    await user.type(await screen.findByTestId("restore-key-input"), "bad key");
+    await user.click(screen.getByTestId("restore-key-submit"));
+    expect(await screen.findByTestId("key-safe-error")).toHaveTextContent("Incorrect key");
+    expect(ready).not.toHaveBeenCalledWith(true);
+    await user.click(screen.getByTestId("key-safe-retry"));
+    await waitFor(() => expect(screen.getByTestId("restore-key-input")).toHaveValue(""));
   });
-
-  it("offers account setup only when recovery is not configured", async () => {
-    const storage = fakeStorage();
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-not-setup")).toHaveTextContent(
-      "Recovery is not configured on this account.",
-    );
-    expect(screen.getByTestId("setup-recovery")).toHaveTextContent("Set up recovery on this device");
-  });
-
-  it("fails closed when the SDK rejects an inconsistent recovery state", async () => {
-    const storage = fakeStorage();
-    vi.mocked(storage.keys.getStatus).mockRejectedValue(
-      new Error("secret storage state is inconsistent"),
-    );
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    render(<RecoveryPanel />);
-
-    expect(await screen.findByTestId("recovery-status-unknown")).toBeInTheDocument();
-    expect(screen.queryByTestId("setup-recovery")).not.toBeInTheDocument();
-  });
-
-  it("clears a restore key after a failed restore", async () => {
-    const storage = fakeStorage(configuredStatus);
-    vi.mocked(storage.keys.restoreFromRecoveryKey).mockRejectedValue(new Error("upstream room id leaked"));
-    useStorageMock.mockReturnValue({ storage } as never);
-
-    const view = render(<RecoveryPanel />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId("restore-expand"));
-    const input = screen.getByTestId("restore-key-input");
-    await user.type(input, "bad key");
-    await user.click(screen.getByTestId("restore-submit"));
-
-    await waitFor(() => expect(input).toHaveValue(""));
-    expect(screen.getByTestId("recovery-error")).toHaveTextContent(
-      "upstream room id leaked",
-    );
-    view.unmount();
-  });
-
 });

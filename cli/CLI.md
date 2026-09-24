@@ -1,6 +1,6 @@
 # `telecrypt-io` CLI
 
-A terminal CLI over the `TeleCryptIOStorage` library: log in, set up recovery, create shared
+A terminal CLI over the `TeleCryptIOStorage` library: log in, set up the Decryption Key Safe, create shared
 vaults, invite participants, and upload/download end-to-end encrypted files — all driven
 entirely by the library (this CLI does not reimplement crypto or Matrix logic). All commands live
 under the `storage` namespace (`telecrypt-io storage ...`).
@@ -68,13 +68,28 @@ headless or remotely operated machines; the verification URL and code are still 
 Logout revokes the server session before removing local credentials. If the server cannot be
 reached or rejects the request, the profile is retained so logout can be retried.
 
-### Recovery (server-side key backup)
+### Decryption Key Safe
 
 ```sh
-telecrypt-io storage recovery setup                  # prints the Recovery Key — save it, it's shown once
-telecrypt-io storage recovery restore                 # hidden Recovery Key prompt
-printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin
+telecrypt-io storage key-safe setup
+telecrypt-io storage key-safe setup --output <new-private-file>
+telecrypt-io storage key-safe confirm-saved
+telecrypt-io storage key-safe restore                 # hidden Recovery Key prompt
+printf '%s' "$RECOVERY_KEY" | telecrypt-io storage key-safe restore --key-stdin
 ```
+
+The Decryption Key Safe is required before any vault or file command. An interactive login starts
+setup or restoration immediately. A non-interactive login persists the session and reports its
+`keySafe.state`; finish the reported step before using Storage. Setup displays the Recovery Key and
+requires an explicit confirmation that it has been saved. `--output` writes it to a new mode-0600
+file and refuses to overwrite an existing path. In non-interactive use, run `confirm-saved` only
+after preserving the key outside the profile. Setup can be resumed in another process and returns
+the same pending key until confirmation.
+
+Keep the Recovery Key somewhere separate from the computer and profile. If both the Recovery Key
+and access to every signed-in client login are lost, files may become permanently unreadable; a
+password reset cannot recover them. On a new client login for an account with an existing Safe, run
+`restore` with that saved key before Storage commands.
 
 ### Vaults
 
@@ -118,9 +133,14 @@ cancellation boundary before installation.
 ```sh
 export A=~/.telecrypt-io/storage-alice
 export B=~/.telecrypt-io/storage-bob
+export KEY_BACKUP_PATH=/path/to/a/location-separate-from-these-profiles
 
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage key-safe setup --output "$KEY_BACKUP_PATH/alice-recovery-key" --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage key-safe confirm-saved --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage key-safe setup --output "$KEY_BACKUP_PATH/bob-recovery-key" --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage key-safe confirm-saved --json
 
 VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
 
@@ -134,15 +154,17 @@ TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file list "$VAULT_ID" --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file download "$VAULT_ID" '$...' ./report-downloaded.pdf --json
 ```
 
-## Example: recovery on a new device
+## Example: set up the Safe and restore it on a new device
 
 ```sh
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
-# { "recoveryKey": "EsTx ...." }  -- save this
+export KEY_BACKUP_PATH=/path/to/a/location-separate-from-these-profiles
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage key-safe setup --output "$KEY_BACKUP_PATH/alice-recovery-key" --json
+# { "state": "confirmation-required", "confirmationRequired": true, "savedTo": "..." }
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage key-safe confirm-saved --json
 
 # Later, on a fresh profile (new device, same account):
 export A2=~/.telecrypt-io/storage-alice-newlaptop
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --server-name telecrypt.io --json
-printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
+cat "$KEY_BACKUP_PATH/alice-recovery-key" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage key-safe restore --key-stdin --json
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$VAULT_ID" '$...' ./recovered.pdf --json
 ```

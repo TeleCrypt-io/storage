@@ -26,6 +26,15 @@ import { cancellationExitCode, installCancellationHandlers } from "./cancellatio
 import { scheduleBoundedNormalExit } from "./processExit.js";
 import { readBoundedInput, writeDownload } from "./fileTransfer.js";
 import { readRecoveryKey } from "./recoveryInput.js";
+import {
+  confirmRecoveryKeyWasSaved,
+  getKeySafeStatus,
+  isInteractiveTerminal,
+  keySafeApi,
+  requireReadyKeySafe,
+  writeRecoveryKeyFile,
+  type KeySafeStatus,
+} from "./keySafe.js";
 
 function validateSharedMatrixUserId(userId: string): void {
   try {
@@ -65,17 +74,22 @@ function withCoreDeadline<T>(
 }
 
 function openProfileStorage(signal: AbortSignal): Promise<OpenedStorage> {
-  return openStorage(undefined, signal);
+  return openStorage(undefined, signal, false);
 }
 
 async function withProfileStorage<T>(
   signal: AbortSignal,
   operation: (opened: OpenedStorage) => Promise<T>,
+  requireKeySafe = true,
 ): Promise<T> {
   const opened = await openProfileStorage(signal);
   let operationFailed = false;
   let operationError: unknown;
   try {
+    if (requireKeySafe) {
+      await requireReadyKeySafe(opened);
+      await opened.run((operationSignal) => opened.storage.startSync(operationSignal), "initial Matrix sync");
+    }
     return await operation(opened);
   } catch (error) {
     operationFailed = true;
@@ -94,6 +108,93 @@ async function withProfileStorage<T>(
       throw closeError;
     }
   }
+}
+
+const DECRYPTION_KEY_SAFE_WARNING =
+  "Save this Recovery Key somewhere safe. If you lose this key and access to all your signed-in devices, your files may become permanently unreadable. Resetting your account password will not restore access.";
+
+function jsonMode(command: Command): boolean {
+  return Boolean((command.optsWithGlobals() as { json?: boolean }).json);
+}
+
+function keySafeNextStep(status: KeySafeStatus): string {
+  switch (status.state) {
+    case "setup-required":
+      return "run `telecrypt-io storage key-safe setup`";
+    case "confirmation-required":
+      return "save the displayed Recovery Key, then run `telecrypt-io storage key-safe confirm-saved`";
+    case "restore-required":
+      return "run `telecrypt-io storage key-safe restore` with the saved Recovery Key";
+    case "ready":
+      return "";
+  }
+}
+
+function displayRecoveryKey(recoveryKey: string, savedTo?: string): void {
+  process.stderr.write(`${DECRYPTION_KEY_SAFE_WARNING}\n\n`);
+  if (savedTo) {
+    process.stderr.write(`Recovery Key saved to ${safeOutputField(savedTo)}.\n\n`);
+  } else {
+    process.stderr.write(`Recovery Key:\n\n${safeOutputField(recoveryKey)}\n\n`);
+  }
+}
+
+async function runLoginKeySafeOnboarding(
+  signal: AbortSignal,
+  interactive: boolean,
+): Promise<KeySafeStatus> {
+  return withProfileStorage(signal, async (opened) => {
+    const api = keySafeApi(opened);
+    let status = await getKeySafeStatus(opened);
+    if (!interactive) return { state: status.state };
+
+    if (status.state === "setup-required") {
+      markBackupWorkPending(opened.storage);
+      await opened.run((operationSignal) => api.setup(operationSignal), "Decryption Key Safe setup");
+      await opened.run(
+        (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+        "key backup settlement",
+        25_000,
+      );
+      status = await getKeySafeStatus(opened);
+    }
+
+    if (status.state === "confirmation-required") {
+      if (!status.recoveryKey) {
+        throw new StorageError("Decryption Key Safe setup is pending, but its Recovery Key is unavailable; retry setup");
+      }
+      await opened.run(
+        (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+        "key backup settlement",
+        25_000,
+      );
+      displayRecoveryKey(status.recoveryKey);
+      if (await confirmRecoveryKeyWasSaved(signal)) {
+        await opened.run(
+          (operationSignal) => api.confirmSaved(operationSignal),
+          "saved Recovery Key confirmation",
+        );
+        status = await getKeySafeStatus(opened);
+      }
+      return { state: status.state };
+    }
+
+    if (status.state === "restore-required") {
+      const recoveryKey = await readRecoveryKey(false, signal);
+      markBackupWorkPending(opened.storage);
+      await opened.run(
+        (operationSignal) => api.restore(recoveryKey, operationSignal),
+        "Decryption Key Safe restore",
+      );
+      await opened.run(
+        (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+        "key backup settlement",
+        25_000,
+      );
+      status = await getKeySafeStatus(opened);
+    }
+    return { state: status.state };
+  }, false);
 }
 
 function guessMimetype(filePath: string): string {
@@ -154,9 +255,33 @@ storage
           );
         },
       }, signal);
+      // Login is already persisted before onboarding starts. If the user
+      // declines confirmation or interrupts this prompt, the exact session
+      // and crypto snapshot remain available for a later key-safe command.
+      let keySafe: KeySafeStatus;
+      try {
+        keySafe = await runLoginKeySafeOnboarding(
+          signal,
+          isInteractiveTerminal(jsonMode(command)),
+        );
+      } catch (error) {
+        throw new StorageError(
+          "login completed and its session remains saved, but Decryption Key Safe onboarding did not finish; resume with the appropriate `telecrypt-io storage key-safe` command",
+          { cause: error },
+        );
+      }
+      const nextStep = keySafeNextStep(keySafe);
       return {
-        json: { userId: session.userId, deviceId: session.deviceId, homeserver: session.homeserver },
-        text: `Logged in as ${safeOutputField(session.userId)} (device ${safeOutputField(session.deviceId)})`,
+        json: {
+          userId: session.userId,
+          deviceId: session.deviceId,
+          homeserver: session.homeserver,
+          keySafe: { state: keySafe.state },
+        },
+        text: [
+          `Logged in as ${safeOutputField(session.userId)} (device ${safeOutputField(session.deviceId)})`,
+          ...(nextStep ? [`Decryption Key Safe needs attention: ${nextStep}.`] : []),
+        ].join("\n"),
       };
     });
   });
@@ -203,61 +328,172 @@ storage
   });
 
 // ---------------------------------------------------------------------------
-// Recovery (Layer 2)
+// Decryption Key Safe
 // ---------------------------------------------------------------------------
 
-const recovery = storage.command("recovery").description("Server-side key backup / recovery");
+const keySafe = storage.command("key-safe").description("Set up or restore the Decryption Key Safe");
 
-recovery
+keySafe
   .command("setup")
-  .description("Set up recovery (cross-signing + key backup) and print the Recovery Key")
-  .action(async (_opts, command: Command) => {
+  .description("Set up the Decryption Key Safe and preserve its Recovery Key")
+  .option("--output <path>", "Save the Recovery Key to a new private file (never overwrites)")
+  .action(async (opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        markBackupWorkPending(opened.storage);
-        const result = await withCoreDeadline(
-          opened,
-          (operationSignal) => core.setupRecovery(opened.storage, { signal: operationSignal }),
-          "recovery setup",
-        );
-        // Give any already-known megolm sessions a chance to actually reach
-        // the server backup before this short-lived process exits — see
-        // waitForBackupSettled's doc comment.
+        const api = keySafeApi(opened);
+        let status = await getKeySafeStatus(opened);
+        if (status.state === "restore-required") {
+          throw new StorageError("an existing Decryption Key Safe must be restored with `telecrypt-io storage key-safe restore`");
+        }
+
+        if (status.state === "setup-required") {
+          markBackupWorkPending(opened.storage);
+          await opened.run(
+            (operationSignal) => api.setup(operationSignal),
+            "Decryption Key Safe setup",
+          );
+          await opened.run(
+            (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+            "key backup settlement",
+            25_000,
+          );
+          status = await getKeySafeStatus(opened);
+        }
+
+        if (status.state === "ready") {
+          return {
+            json: { state: "ready", alreadyReady: true },
+            text: "The Decryption Key Safe is already ready on this client login.",
+          };
+        }
+        if (status.state !== "confirmation-required" || !status.recoveryKey) {
+          throw new StorageError(`Decryption Key Safe setup did not reach a resumable key-preservation state (${status.state}); rerun setup to resume`);
+        }
+
+        // A previous process may have stopped after creating the Safe but
+        // before its asynchronous room-key uploads settled.
         await opened.run(
           (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
           "key backup settlement",
           25_000,
         );
-        return {
-          json: { ...result },
-          text: [
-            "Recovery Key (SAVE THIS — it is the only way to recover your files on a new device):",
-            "",
-            safeOutputField(result.recoveryKey),
-          ].join("\n"),
+
+        const savedTo = opts.output
+          ? writeRecoveryKeyFile(opts.output, status.recoveryKey)
+          : undefined;
+        const interactive = isInteractiveTerminal(jsonMode(command));
+        if (interactive) {
+          displayRecoveryKey(status.recoveryKey, savedTo);
+          if (await confirmRecoveryKeyWasSaved(signal)) {
+            await opened.run(
+              (operationSignal) => api.confirmSaved(operationSignal),
+              "saved Recovery Key confirmation",
+            );
+            status = await getKeySafeStatus(opened);
+          }
+        }
+
+        const confirmationRequired = status.state === "confirmation-required";
+        const json: Record<string, unknown> = {
+          state: status.state,
+          confirmationRequired,
+          ...(savedTo ? { savedTo } : {}),
+          ...(!savedTo ? { recoveryKey: status.recoveryKey } : {}),
         };
-      });
+        const text = status.state === "ready"
+          ? "The Decryption Key Safe is ready."
+          : savedTo
+            ? `Recovery Key saved to ${safeOutputField(savedTo)}. Run telecrypt-io storage key-safe confirm-saved after preserving it.`
+            : [
+                DECRYPTION_KEY_SAFE_WARNING,
+                "",
+                "Recovery Key:",
+                "",
+                safeOutputField(status.recoveryKey),
+                "",
+                "Run `telecrypt-io storage key-safe confirm-saved` after preserving it.",
+              ].join("\n");
+        return { json, text };
+      }, false);
     });
   });
 
-recovery
+keySafe
+  .command("confirm-saved")
+  .description("Confirm that the Recovery Key has been saved somewhere safe")
+  .action(async (_opts, command: Command) => {
+    await runAction(command, async (signal): Promise<CommandResult> => {
+      return withProfileStorage(signal, async (opened) => {
+        const api = keySafeApi(opened);
+        const status = await getKeySafeStatus(opened);
+        if (status.state === "setup-required") {
+          throw new StorageError("set up the Decryption Key Safe before confirming its Recovery Key");
+        }
+        if (status.state === "restore-required") {
+          throw new StorageError("restore the existing Decryption Key Safe before confirming it");
+        }
+        if (status.state === "confirmation-required") {
+          await opened.run(
+            (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+            "key backup settlement",
+            25_000,
+          );
+          await opened.run(
+            (operationSignal) => api.confirmSaved(operationSignal),
+            "saved Recovery Key confirmation",
+          );
+        }
+        const ready = await getKeySafeStatus(opened);
+        if (ready.state !== "ready") {
+          throw new StorageError(`Decryption Key Safe confirmation did not complete (${ready.state})`);
+        }
+        return {
+          json: { state: "ready" },
+          text: "The Decryption Key Safe is ready on this client login.",
+        };
+      }, false);
+    });
+  });
+
+keySafe
   .command("restore")
-  .description("Restore keys on this device from a Recovery Key (hidden prompt by default)")
+  .description("Restore account signing keys and room decryption keys (hidden prompt by default)")
   .option("--key-stdin", "Read the Recovery Key from stdin (for a pipe, never a TTY)")
   .action(async (opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
-      const recoveryKey = await readRecoveryKey(Boolean(opts.keyStdin), signal);
       return withProfileStorage(signal, async (opened) => {
-          const result = await withCoreDeadline(
-            opened,
-            (operationSignal) => core.restoreRecovery(opened.storage, recoveryKey, { signal: operationSignal }),
-            "recovery restore",
-          );
-          return {
-            json: { ...result },
-            text: `Restored ${safeOutputField(result.imported)}/${safeOutputField(result.total)} keys.`,
-          };
-        });
+        const api = keySafeApi(opened);
+        const status = await getKeySafeStatus(opened);
+        if (status.state === "ready") {
+          throw new StorageError("the Decryption Key Safe is already ready on this client login");
+        }
+        if (status.state === "setup-required") {
+          throw new StorageError("no existing Decryption Key Safe was found; run `telecrypt-io storage key-safe setup`");
+        }
+        if (status.state === "confirmation-required") {
+          throw new StorageError("this client has a new Recovery Key awaiting confirmation; run `telecrypt-io storage key-safe confirm-saved`");
+        }
+
+        const recoveryKey = await readRecoveryKey(Boolean(opts.keyStdin), signal);
+        markBackupWorkPending(opened.storage);
+        const result = await opened.run(
+          (operationSignal) => api.restore(recoveryKey, operationSignal),
+          "Decryption Key Safe restore",
+        );
+        await opened.run(
+          (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+          "key backup settlement",
+          25_000,
+        );
+        const ready = await getKeySafeStatus(opened);
+        if (ready.state !== "ready") {
+          throw new StorageError(`Decryption Key Safe restoration did not finish (${ready.state})`);
+        }
+        return {
+          json: { imported: result.imported, total: result.total, state: "ready" },
+          text: `Restored ${safeOutputField(result.imported)}/${safeOutputField(result.total)} room decryption keys.`,
+        };
+      }, false);
     });
   });
 

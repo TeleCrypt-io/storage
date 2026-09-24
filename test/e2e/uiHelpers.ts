@@ -6,13 +6,32 @@ export interface ConsoleAudit {
   assertClean: () => void;
 }
 
+function sanitizeStartupDiagnostic(value: string): string {
+  return value
+    .replace(/\b(access_token|refresh_token|id_token|client_secret|code|state)=([^\s&]+)/giu, "$1=<redacted>")
+    .replace(/\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\b/gu, "<redacted>")
+    .replace(/@[\w.-]+:localhost:8008/gu, "@<test-user>:localhost:8008");
+}
+
 const EXPECTED_LOCAL_CONSOLE = [
   /^Applying inline style violates .* \(http:\/\/localhost:5173\/@vite\/client\)$/,
   /^Failed to load resource: net::ERR_SSL_PROTOCOL_ERROR \(https:\/\/localhost:8008\/\.well-known\/matrix\/client\)$/,
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/room_keys\/version\)$/,
+  // An empty Matrix account has no Safe, signing, or backup account-data yet;
+  // these 404s are the documented "setup required" result during first use.
+  /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/user\/%40[^/]+\/account_data\/(?:m\.secret_storage\.default_key|m\.secret_storage\.key\.[^/]+|m\.cross_signing\.(?:master|self_signing|user_signing)|m\.megolm_backup\.v1)\)$/,
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/unstable\/org\.matrix\.msc4143\/rtc\/transports\)$/,
   /^Adding default global (?:override|underride) push rule \.(?:org\.matrix\.msc3786\.rule\.room\.server_acl|org\.matrix\.msc3914\.rule\.room\.call) \(http:\/\/localhost:5173\/@vite\/client\)$/,
   /^resetCrossSigning: Secret storage is not yet set up; not exporting keys to secret storage yet\. \(http:\/\/localhost:5173\/@vite\/client\)$/,
+  // Safe initialization writes Matrix's existing signing/backup records before
+  // timeline sync so a fresh login cannot decrypt history prematurely. The SDK
+  // warning only concerns its in-memory account-data cache; reads are refreshed
+  // from the homeserver before the crypto library imports these records.
+  /^Calling \x60setAccountData\x60 before the client is started: \x60getAccountData\x60 may return inconsistent results\. \(http:\/\/localhost:5173\/@vite\/client\)$/,
+  // Rust crypto can report this transiently while its own-device key query is
+  // still in flight during initial Safe setup. Functional checks below still
+  // require setup, sharing, and decryption to finish successfully.
+  /^warning: WARN matrix_sdk_crypto::store: The user has a pending \x60\/keys\/query\x60 request which did not finish yet, some devices might be missing\./,
 ];
 
 /** Fail a test on every unexpected browser warning, error, or uncaught page error. */
@@ -22,7 +41,10 @@ export function auditConsole(page: Page, allowed: RegExp[] = []): ConsoleAudit {
     if (message.type() !== "warning" && message.type() !== "error") return;
     const location = message.location().url;
     const detail = `${message.text()}${location ? ` (${location})` : ""}`;
-    if (![...EXPECTED_LOCAL_CONSOLE, ...allowed].some((pattern) => pattern.test(detail))) {
+    const accepted = [...EXPECTED_LOCAL_CONSOLE, ...allowed].some(
+      (pattern) => pattern.test(detail) || pattern.test(message.type() + ": " + detail),
+    );
+    if (!accepted) {
       unexpected.push(`${message.type()}: ${detail}`);
     }
   });
@@ -53,11 +75,39 @@ async function completeMasOidcLogin(page: Page, user: E2eUser): Promise<void> {
 }
 
 /** Opens Storage and signs in through its real MAS/OIDC browser flow. */
-export async function loginViaUI(page: Page, user: E2eUser): Promise<void> {
+export async function loginViaUI(
+  page: Page,
+  user: E2eUser,
+  options: { deferKeySafe?: boolean } = {},
+): Promise<string | undefined> {
+  const startupErrors: string[] = [];
+  page.on("pageerror", (error) => startupErrors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") startupErrors.push(`console: ${message.text()}`);
+  });
   await page.goto("/");
   await page.getByTestId("oidc-login").click();
   await completeMasOidcLogin(page, user);
-  await expect(page.getByTestId("current-user")).toHaveText(user.userId, { timeout: 20000 });
+  const currentUser = page.getByTestId("current-user");
+  try {
+    await expect(currentUser).toHaveText(user.userId, { timeout: 90_000 });
+  } catch (error) {
+    const visibleState = await page.locator("body").innerText().catch(() => "");
+    const currentUrl = new URL(page.url());
+    currentUrl.search = "";
+    currentUrl.hash = "";
+    const diagnostics = startupErrors.map(sanitizeStartupDiagnostic).join(" | ") || "none";
+    throw new Error(
+      `Storage did not reach ready state after sign-in (${currentUrl.href}): ${visibleState.replace(/\s+/gu, " ").slice(0, 1200)}; browser errors: ${diagnostics}`,
+      { cause: error },
+    );
+  }
+  if (options.deferKeySafe) return;
+  await page.getByTestId("setup-key-safe").click({ timeout: 60_000 });
+  const key = await page.getByTestId("key-safe-recovery-key").textContent({ timeout: 60_000 });
+  expect(key).toBeTruthy();
+  await confirmRecoveryKeySaved(page);
+  return key!;
 }
 
 export async function createVault(page: Page, name: string): Promise<string> {
@@ -83,20 +133,13 @@ export async function openVaultByName(page: Page, name: string): Promise<void> {
 export async function joinVault(
   page: Page,
   vaultId: string,
-  vaultName?: string,
 ): Promise<void> {
   await page.getByTestId("nav-vaults").click();
   const invite = page.locator(`[data-testid="invite-item"][data-vault-id="${vaultId}"]`);
-  if (await invite.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await invite.getByTestId("accept-invite").click();
-  } else if (vaultName) {
-    const byName = page.locator('[data-testid="invite-item"]', { hasText: vaultName });
-    await expect(byName).toBeVisible({ timeout: 20000 });
-    await byName.getByTestId("accept-invite").click();
-  } else {
-    await expect(invite).toBeVisible({ timeout: 20000 });
-    await invite.getByTestId("accept-invite").click();
-  }
+  // Invite-room names are intentionally hidden by encrypted metadata. Wait for
+  // the stable Matrix room ID through sync rather than falling back to a name.
+  await expect(invite).toBeVisible({ timeout: 20_000 });
+  await invite.getByTestId("accept-invite").click();
   await expect(page.locator(`[data-testid="vault-item"][data-vault-id="${vaultId}"]`)).toBeVisible({
     timeout: 20000,
   });
@@ -144,17 +187,14 @@ export async function downloadFileBytes(page: Page, name: string): Promise<Buffe
 }
 
 export async function confirmRecoveryKeySaved(page: Page): Promise<void> {
-  await page.getByTestId("confirm-saved-recovery-key").check();
-  await page.getByTestId("recovery-setup-done").click();
-  await expect(page.getByTestId("recovery-key-display")).not.toBeVisible({ timeout: 5000 });
+  await page.getByTestId("confirm-saved-key").click();
+  await expect(page.getByTestId("key-safe-key-display")).not.toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("nav-vaults")).toBeEnabled();
 }
 
 export async function restoreRecoveryKey(page: Page, key: string): Promise<void> {
-  await expect(page.getByTestId("restore-expand")).toBeVisible({ timeout: 60_000 });
-  if (!(await page.getByTestId("restore-key-input").isVisible().catch(() => false))) {
-    await page.getByTestId("restore-expand").click();
-  }
+  await expect(page.getByTestId("restore-key-input")).toBeVisible({ timeout: 60_000 });
   await page.getByTestId("restore-key-input").fill(key.trim());
-  await page.getByTestId("restore-submit").click();
-  await expect(page.getByTestId("restore-result")).toBeVisible({ timeout: 120_000 });
+  await page.getByTestId("restore-key-submit").click();
+  await expect(page.getByTestId("nav-vaults")).toBeEnabled({ timeout: 120_000 });
 }
