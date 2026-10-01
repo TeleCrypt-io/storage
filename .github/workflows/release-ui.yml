@@ -1,123 +1,17 @@
-name: Build and publish storage site release
+name: Deploy prepared Pages release
 
+# Dispatch with --ref <annotated release tag>, only after owner-authorized promotion.
 on:
-  push:
-    tags: ["storage-web-v*"]
   workflow_dispatch:
 
 permissions: {contents: read}
 
 concurrency:
-  group: pages-storage-web-${{ github.ref_name }}
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    permissions: {contents: read}
-    outputs:
-      pages_digest: ${{ steps.package.outputs.pages_digest }}
-      pages_size: ${{ steps.package.outputs.pages_size }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_SHA: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with: {fetch-depth: 0, persist-credentials: false}
-      - name: Verify annotated release source
-        run: bash scripts/verify-release-source.sh "$RELEASE_TAG" "$RELEASE_SHA" storage-web-v
-      - uses: actions/setup-node@v7.0.0
-        with: {node-version-file: .node-version, cache: npm}
-      - name: Verify release version
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm_version="$(node -p 'require("./package.json").packageManager.replace(/^npm@/u, "")')"
-          test "$(npm --version)" = "$npm_version"
-          version="${RELEASE_TAG#storage-web-v}"
-          test "$version" = "$(node -p 'require("./package.json").version')"
-          test "$version" = "$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).packages[""].version')"
-      - name: Test and build the site
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --ignore-scripts --no-fund --no-audit
-          npm test
-          npm run lint
-          npm run build
-      - name: Package the Pages archive
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG#storage-web-v}"
-          archive="storage-web-$version.pages.zip"
-          mkdir -p release-assets
-          bash scripts/package-pages.sh dist "release-assets/$archive" "$(git show -s --format=%ct "$RELEASE_SHA")"
-          size="$(wc -c <"release-assets/$archive")"
-          digest="sha256:$(sha256sum "release-assets/$archive" | awk '{print $1}')"
-          printf 'pages_digest=%s\npages_size=%s\n' "$digest" "$size" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: storage-pages-${{ github.run_id }}-${{ github.sha }}
-          path: release-assets/*.pages.zip
-          if-no-files-found: error
-          retention-days: 7
-
-  release:
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions: {contents: write}
-    outputs:
-      release_id: ${{ steps.verify.outputs.release_id }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_SHA: ${{ github.sha }}
-      EXPECTED_DIGEST: ${{ needs.build.outputs.pages_digest }}
-      EXPECTED_SIZE: ${{ needs.build.outputs.pages_size }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with: {persist-credentials: false}
-      - uses: actions/download-artifact@v7.0.0
-        with:
-          name: storage-pages-${{ github.run_id }}-${{ github.sha }}
-          path: release-assets
-      - name: Create the tagged Release
-        if: ${{ github.event_name == 'push' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG#storage-web-v}"
-          archive="release-assets/storage-web-$version.pages.zip"
-          test -s "$archive"
-          test "$(wc -c <"$archive")" = "$EXPECTED_SIZE"
-          test "sha256:$(sha256sum "$archive" | awk '{print $1}')" = "$EXPECTED_DIGEST"
-          gh release create "$RELEASE_TAG" "$archive" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --target "$RELEASE_SHA" \
-            --title "$RELEASE_TAG" \
-            --notes "Release $RELEASE_TAG"
-      - name: Verify and download the immutable Release archive
-        id: verify
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG#storage-web-v}"
-          release_id="$(bash scripts/verify-release.sh \
-            "$RELEASE_TAG" "$RELEASE_SHA" "storage-web-$version.pages.zip" \
-            "$EXPECTED_DIGEST" "$EXPECTED_SIZE" "$RUNNER_TEMP/release-assets")"
-          built="release-assets/storage-web-$version.pages.zip"
-          downloaded="$RUNNER_TEMP/release-assets/storage-web-$version.pages.zip"
-          cmp "$built" "$downloaded"
-          printf 'release_id=%s\n' "$release_id" >>"$GITHUB_OUTPUT"
-
   deploy:
-    needs: [build, release]
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions: {contents: read, pages: write, id-token: write}
@@ -127,28 +21,20 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_SHA: ${{ github.sha }}
-      EXPECTED_RELEASE_ID: ${{ needs.release.outputs.release_id }}
-      EXPECTED_DIGEST: ${{ needs.build.outputs.pages_digest }}
-      EXPECTED_SIZE: ${{ needs.build.outputs.pages_size }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
-        with: {persist-credentials: false}
-      - name: Download the verified immutable archive
+        with: {fetch-depth: 0, persist-credentials: false}
+      - name: Download the immutable release and verify its source and archive
         shell: bash
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#storage-web-v}"
-          bash scripts/verify-release.sh \
-            "$RELEASE_TAG" "$RELEASE_SHA" "storage-web-$version.pages.zip" \
-            "$EXPECTED_DIGEST" "$EXPECTED_SIZE" "$RUNNER_TEMP/release-assets" "$EXPECTED_RELEASE_ID"
+          bash scripts/download-release.sh "$RELEASE_TAG" "$RELEASE_SHA" "$RUNNER_TEMP/release"
           mkdir dist
-          timeout --signal=TERM --kill-after=5s 300s unzip \
-            "$RUNNER_TEMP/release-assets/storage-web-$version.pages.zip" -d dist
+          unzip "$RUNNER_TEMP/release/storage-web-${RELEASE_TAG#storage-web-v}.pages.zip" -d dist
       - uses: actions/configure-pages@v6.0.0
       - uses: actions/upload-pages-artifact@v5.0.0
         with: {path: dist}
       - id: deployment
         uses: actions/deploy-pages@v5.0.1
-        with:
-          artifact_name: github-pages
+        with: {artifact_name: github-pages}
