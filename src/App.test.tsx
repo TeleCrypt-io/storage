@@ -138,7 +138,7 @@ async function loginAndReachVaults(
   const storage = fakeStorage(recoverySetup);
   vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
     issuer: runtimeOidcIssuer(),
-    token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+    token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
   } as never);
   vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
   vi.mocked(core.listVaults).mockResolvedValue(initialVaults);
@@ -526,7 +526,7 @@ describe("login", () => {
     vi.mocked(oidcAuth.completeOidcLoginFromCallback).mockResolvedValue(SESSION);
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
       issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
     vi.mocked(core.listVaults).mockResolvedValue([]);
@@ -556,7 +556,7 @@ describe("login", () => {
       const bootstrap = deferred<unknown>();
       vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
         issuer: runtimeOidcIssuer(),
-        token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+        token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
       } as never);
       vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockReturnValue(bootstrap.promise as never);
       sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
@@ -600,7 +600,7 @@ describe("login", () => {
     storage.stopClient.mockImplementation(() => { throw failure; });
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
       issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
     sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
@@ -620,7 +620,7 @@ describe("login", () => {
     const bootstrap = deferred<unknown>();
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
       issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
+      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockReturnValue(bootstrap.promise as never);
     sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));

@@ -45,10 +45,10 @@ vi.mock("./revokeSession", async () => {
 });
 
 const METADATA = {
-  issuer: `${getRuntimeSettings().homeserver}/auth/`,
-  authorization_endpoint: `${getRuntimeSettings().homeserver}/auth/authorize`,
-  token_endpoint: `${getRuntimeSettings().homeserver}/auth/token`,
-  registration_endpoint: `${getRuntimeSettings().homeserver}/auth/register`,
+  issuer: `${getRuntimeSettings().homeserver}/`,
+  authorization_endpoint: `${getRuntimeSettings().homeserver}/authorize`,
+  token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+  registration_endpoint: `${getRuntimeSettings().homeserver}/oauth2/registration`,
 };
 
 function memoryStorage(): Storage {

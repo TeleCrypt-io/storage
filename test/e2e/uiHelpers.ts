@@ -36,7 +36,7 @@ export function auditConsole(page: Page, allowed: RegExp[] = []): ConsoleAudit {
  * disposable MAS. Test credentials are entered only into MAS's page, never
  * into the Storage application. */
 async function completeMasOidcLogin(page: Page, user: E2eUser): Promise<void> {
-  await page.waitForURL(/localhost:8008\/auth(?:\/|$)/, { timeout: 20_000 });
+  await page.waitForURL(/localhost:8008\/(?:authorize|login|consent|link)(?:\/|[?#]|$)/, { timeout: 20_000 });
   await page.getByLabel("Username").fill(user.localpart);
   await page.getByLabel("Password").fill(user.password);
   await page.getByRole("button", { name: "Continue" }).click();

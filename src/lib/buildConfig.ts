@@ -100,7 +100,7 @@ export function getRuntimeSettings(): RuntimeSettings {
 }
 
 export function runtimeOidcIssuer(): string {
-  return `${getRuntimeSettings().homeserver}/auth/`;
+  return `${getRuntimeSettings().homeserver}/`;
 }
 
 export function assertRuntimeOidcEndpoint(value: unknown, name: string): string {
@@ -115,7 +115,6 @@ export function assertRuntimeOidcEndpoint(value: unknown, name: string): string 
   if (
     endpoint.protocol !== issuer.protocol ||
     endpoint.origin !== issuer.origin ||
-    !endpoint.pathname.startsWith(issuer.pathname) ||
     endpoint.username !== "" ||
     endpoint.password !== "" ||
     endpoint.port !== issuer.port ||
@@ -123,7 +122,7 @@ export function assertRuntimeOidcEndpoint(value: unknown, name: string): string 
     endpoint.hash !== "" ||
     endpoint.toString() !== value
   ) {
-    throw new Error(`${name} must remain on the configured OIDC origin and /auth/ path`);
+    throw new Error(`${name} must remain on the configured OIDC origin`);
   }
   return value;
 }

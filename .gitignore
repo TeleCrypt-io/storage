@@ -30,3 +30,6 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# Locally prepared release archives and checksums
+/release/

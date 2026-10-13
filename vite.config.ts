@@ -67,9 +67,13 @@ function securityPolicyPlugin(): Plugin {
 // package (wired up as an actual global in src/main.tsx). Everything else in
 // matrix-js-sdk resolves via its own "browser" package.json field, which Vite
 // picks up automatically — no further Node polyfills needed.
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), securityPolicyPlugin()],
   define: {
     global: "globalThis",
   },
-});
+  // Vite's React Fast Refresh preamble is an inline module script. The local
+  // E2E server uses the same strict CSP as the app, so disable HMR there and
+  // exercise the production React runtime without weakening the policy.
+  ...(mode === "e2e" ? { server: { hmr: false } } : {}),
+}));

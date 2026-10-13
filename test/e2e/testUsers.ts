@@ -19,7 +19,7 @@ import {
 const execFileAsync = promisify(execFile);
 const HOMESERVER = "http://localhost:8008";
 const SERVER_NAME = "localhost:8008";
-const MAS_BASE = new URL(`${HOMESERVER}/auth/`);
+const MAS_BASE = new URL(`${HOMESERVER}/`);
 const PROVISIONING_RETRIES = 3;
 const PROVISIONING_RETRY_DELAY_MS = 300;
 

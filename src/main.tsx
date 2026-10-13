@@ -1,15 +1,35 @@
-// Buffer polyfill: matrix-js-sdk / matrix-encrypt-attachment call Buffer.from()
-// directly (Node-ism), which does not exist in a browser. Must be wired up
-// before anything from matrix-js-sdk runs.
-import { Buffer } from "buffer";
-(globalThis as unknown as { Buffer: typeof Buffer }).Buffer = Buffer;
-
-import { createRoot } from "react-dom/client";
-import App from "./App.tsx";
-import { getRuntimeSettings, loadRuntimeSettings } from "./lib/buildConfig";
-
 async function bootstrap(): Promise<void> {
   const root = document.getElementById("root")!;
+  if (window.self !== window.top) {
+    const heading = document.createElement("h1");
+    heading.textContent = "418 I'm a teapot";
+
+    document.title = "418 I'm a teapot";
+    document.documentElement.style.cssText = "min-height:100%;background:#fff;color:#000";
+    document.body.style.cssText = "min-height:100vh;margin:0;background:#fff;color:#000";
+    root.style.cssText = "min-height:100vh;box-sizing:border-box;padding:1rem;background:#fff;color:#000";
+    heading.style.cssText = "margin:0;background:#fff;color:#000";
+    root.replaceChildren(heading);
+    return;
+  }
+
+  // Load the browser polyfill before App imports the Matrix SDK, which calls
+  // Buffer.from during module initialization.
+  const { Buffer } = await import("buffer");
+  (globalThis as unknown as { Buffer: typeof Buffer }).Buffer = Buffer;
+
+  const [
+    { createElement },
+    { createRoot },
+    { default: App },
+    { getRuntimeSettings, loadRuntimeSettings },
+  ] = await Promise.all([
+    import("react"),
+    import("react-dom/client"),
+    import("./App.tsx"),
+    import("./lib/buildConfig"),
+  ]);
+
   try {
     await loadRuntimeSettings();
     getRuntimeSettings();
@@ -23,7 +43,7 @@ async function bootstrap(): Promise<void> {
 
   // Deliberately no <StrictMode>: it double-invokes effects in dev, which would
   // build two MatrixClients (two crypto stores, two sync loops) for one mount.
-  createRoot(root).render(<App />);
+  createRoot(root).render(createElement(App));
 }
 
 void bootstrap();

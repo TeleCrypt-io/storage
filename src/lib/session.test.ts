@@ -241,22 +241,22 @@ describe("tab-scoped session persistence", () => {
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(SESSION));
     sessionStorage.setItem("mx_oidc_state", "transient-state");
     sessionStorage.setItem("telecrypt:oauth2:pkce:v1:state", "transient-state");
-    sessionStorage.setItem("telecrypt-io-ui:device:https://backend.telecrypt.io/auth/", "DEVICE1");
+    sessionStorage.setItem("telecrypt-io-ui:device:https://backend.telecrypt.io/", "DEVICE1");
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(SESSION));
     localStorage.setItem(
-      "telecrypt-io-ui:oidc-client:https://backend.telecrypt.io/auth/",
+      "telecrypt-io-ui:oidc-client:https://backend.telecrypt.io/",
       "client-a",
     );
     clearSession();
     expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem("mx_oidc_state")).toBeNull();
     expect(sessionStorage.getItem("telecrypt:oauth2:pkce:v1:state")).toBeNull();
-    expect(sessionStorage.getItem("telecrypt-io-ui:device:https://backend.telecrypt.io/auth/")).toBe(
+    expect(sessionStorage.getItem("telecrypt-io-ui:device:https://backend.telecrypt.io/")).toBe(
       "DEVICE1",
     );
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toEqual(JSON.stringify(SESSION));
     expect(
-      localStorage.getItem("telecrypt-io-ui:oidc-client:https://backend.telecrypt.io/auth/"),
+      localStorage.getItem("telecrypt-io-ui:oidc-client:https://backend.telecrypt.io/"),
     ).toBe("client-a");
   });
 
