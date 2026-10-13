@@ -5,3 +5,9 @@ The TeleCrypt encrypted-storage web application. The browser client uses the pub
 client and its user guide live in [`cli/`](./cli/).
 
 See [`LICENSE`](./LICENSE) for licensing.
+
+The `Deploy Storage Web` workflow publishes Storage to UpCloud Object Storage.
+Pushes to `stage` build and publish that exact commit. Manual dispatches run from `main`; Stage
+defaults to the current `stage` head, while Production requires a `storage-web-vX.Y.Z` release tag.
+When a release tag is supplied, the workflow publishes its verified `.pages.zip` archive without
+building it again.

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-tag="${1:?release tag required}"
-sha="${2:?release commit required}"
-directory="${3:?download directory required}"
-bash scripts/verify-release-source.sh "$tag" "$sha" storage-web-v
+publisher_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+if [[ "$#" -ne 4 ]]; then
+  printf 'usage: download-release.sh TAG SOURCE_SHA DOWNLOAD_DIR SOURCE_CHECKOUT\n' >&2
+  exit 2
+fi
+tag="$1"
+sha="$2"
+directory="$3"
+source_checkout="$(cd -- "$4" && pwd -P)"
+test "$(git -C "$source_checkout" rev-parse HEAD)" = "$sha"
+bash "$publisher_root/scripts/verify-release-source.sh" \
+  "$tag" "$sha" storage-web-v "$source_checkout"
 export GITHUB_REPOSITORY=TeleCrypt-io/storage
 asset="storage-web-${tag#storage-web-v}.pages.zip"
 metadata="$(mktemp)"
@@ -13,4 +20,5 @@ gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >"$metadata"
 digest="$(jq -er '.assets[0].digest' "$metadata")"
 size="$(jq -er '.assets[0].size' "$metadata")"
 id="$(jq -er '.id' "$metadata")"
-bash scripts/verify-release.sh "$tag" "$sha" "$asset" "$digest" "$size" "$directory" "$id"
+bash "$publisher_root/scripts/verify-release.sh" \
+  "$tag" "$sha" "$asset" "$digest" "$size" "$directory" "$id"
