@@ -41,6 +41,8 @@ export function FileManager() {
   const navigationGenerationRef = useRef(0);
   const mutationInflightRef = useRef(false);
   const rootVaultRef = useRef<VaultInfo | null>(null);
+  // Keep an optimistic room until a later sync snapshot includes it.
+  const pendingCreatedVaultsRef = useRef(new Map<string, VaultInfo>());
   // Keep identity and root selection current during render so callbacks cannot observe a prior
   // account between render and effect cleanup.
   // oxlint-disable-next-line react/refs
@@ -57,6 +59,7 @@ export function FileManager() {
     refreshRequestRef.current += 1;
     navigationGenerationRef.current += 1;
     mutationInflightRef.current = false;
+    pendingCreatedVaultsRef.current.clear();
     rootVaultRef.current = null;
     setVaults(null);
     setInvites(null);
@@ -110,11 +113,17 @@ export function FileManager() {
         ),
       ]);
       if (!isCurrentStorage(expectedStorage, generation, request)) return;
-      setVaults(result);
+      const visibleVaultIds = new Set(result.map((vault) => vault.id));
+      for (const id of visibleVaultIds) pendingCreatedVaultsRef.current.delete(id);
+      const refreshedVaults = [
+        ...result,
+        ...[...pendingCreatedVaultsRef.current.values()].filter((vault) => !visibleVaultIds.has(vault.id)),
+      ];
+      setVaults(refreshedVaults);
       setInvites(pending);
       setError(null);
       const selectedRoot = rootVaultRef.current;
-      const refreshedRoot = selectedRoot && result.find((vault) => vault.id === selectedRoot.id);
+      const refreshedRoot = selectedRoot && refreshedVaults.find((vault) => vault.id === selectedRoot.id);
       if (selectedRoot && !refreshedRoot) {
         clearSelectedRoot();
       } else if (selectedRoot && refreshedRoot && refreshedRoot.name !== selectedRoot.name) {
@@ -123,7 +132,7 @@ export function FileManager() {
       }
       let firstOwnershipError: string | null = null;
       const ownedIds = new Set<string>();
-      for (const vault of result) {
+      for (const vault of refreshedVaults) {
         const ownership = core.getVaultOwnership(expectedStorage, vault.id);
         if (ownership.status === "owner") ownedIds.add(vault.id);
         if (!firstOwnershipError) firstOwnershipError = ownershipError(ownership);
@@ -239,6 +248,7 @@ export function FileManager() {
         core.createVault(expectedStorage, name, { signal: accountSignal ?? undefined }),
       );
       if (!isCurrentStorage(expectedStorage, generation)) return;
+      pendingCreatedVaultsRef.current.set(created.id, created);
       setVaults((prev) => [...(prev ?? []), created]);
       setOwnedVaultIds((prev) => new Set(prev).add(created.id));
       if (navigationGenerationRef.current === navigationGeneration) {
@@ -314,6 +324,7 @@ export function FileManager() {
       // A successful delete changes the SDK's ownership projection immediately. Refresh based on
       // the confirmed mutation result, not on the post-delete owner snapshot.
       if (!isCurrentStorage(expectedStorage, generation)) return;
+      pendingCreatedVaultsRef.current.delete(vault.id);
       if (rootVaultRef.current?.id === vault.id) {
         rootVaultRef.current = null;
         setRootVault(null);

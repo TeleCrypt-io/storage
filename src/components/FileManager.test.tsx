@@ -356,4 +356,22 @@ describe("FileManager refresh identity", () => {
 
     expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!b:localhost");
   });
+
+  it("keeps a new vault selected while the server list catches up", async () => {
+    const storage = fakeStorage("shared");
+    vi.mocked(core.listVaults).mockResolvedValue([]);
+    vi.mocked(core.createVault).mockResolvedValue({ id: "!created:localhost", name: "Untitled vault" });
+    useStorageMock.mockReturnValue({ storage } as never);
+    const user = userEvent.setup();
+    render(<FileManager />);
+    await screen.findByTestId("create-vault");
+
+    await user.click(screen.getByTestId("create-vault"));
+    await waitFor(() => expect(core.listVaults).toHaveBeenCalledTimes(2));
+    await flush();
+
+    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!created:localhost");
+    expect(screen.getByTestId("vault-item")).toHaveAttribute("data-vault-id", "!created:localhost");
+    expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+  });
 });
