@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { FileManager } from "./FileManager";
@@ -373,6 +373,36 @@ describe("FileManager refresh identity", () => {
     expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!created:localhost");
     expect(screen.getByTestId("vault-item")).toHaveAttribute("data-vault-id", "!created:localhost");
     expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+  });
+
+  it("keeps a renamed new vault selected across one missing sync snapshot", async () => {
+    const storage = fakeStorage("shared");
+    const created = { id: "!created:localhost", name: "Untitled vault" };
+    const renamed = { id: created.id, name: "TreeVault" };
+    let refreshCount = 0;
+    vi.mocked(core.listVaults).mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 2) return [created];
+      if (refreshCount === 3) return [];
+      return [];
+    });
+    vi.mocked(core.createVault).mockResolvedValue(created);
+    vi.mocked(core.renameVault).mockResolvedValue(renamed);
+    useStorageMock.mockReturnValue({ storage } as never);
+    const user = userEvent.setup();
+    render(<FileManager />);
+
+    await user.click(screen.getByTestId("create-vault"));
+    const renameInput = await screen.findByTestId("rename-vault-input");
+    await waitFor(() => expect(refreshCount).toBeGreaterThanOrEqual(2));
+    fireEvent.change(renameInput, { target: { value: renamed.name } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
+
+    await waitFor(() => expect(refreshCount).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", created.id));
+    expect(screen.getAllByTestId("vault-item")).toHaveLength(1);
+    expect(within(screen.getByTestId("vault-item")).getByRole("button", { name: renamed.name })).toBeInTheDocument();
+    expect(screen.queryByTestId("select-vault-prompt")).not.toBeInTheDocument();
   });
 
   it("does not duplicate a vault already seen by sync before creation returns", async () => {

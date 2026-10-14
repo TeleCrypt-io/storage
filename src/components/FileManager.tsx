@@ -10,6 +10,12 @@ import { VaultContents } from "./VaultContents";
 const POLL_MS = 2500;
 const UNTITLED = "Untitled vault";
 
+type PendingCreatedVault = {
+  vault: VaultInfo;
+  seen: boolean;
+  missingSnapshots: number;
+};
+
 function ownershipError(ownership: core.VaultOwnership): string | null {
   return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
 }
@@ -41,8 +47,8 @@ export function FileManager() {
   const navigationGenerationRef = useRef(0);
   const mutationInflightRef = useRef(false);
   const rootVaultRef = useRef<VaultInfo | null>(null);
-  // Keep an optimistic room until a later sync snapshot includes it.
-  const pendingCreatedVaultsRef = useRef(new Map<string, VaultInfo>());
+  // Keep a newly created room through brief gaps between sync snapshots.
+  const pendingCreatedVaultsRef = useRef(new Map<string, PendingCreatedVault>());
   // Keep identity and root selection current during render so callbacks cannot observe a prior
   // account between render and effect cleanup.
   // oxlint-disable-next-line react/refs
@@ -113,12 +119,27 @@ export function FileManager() {
         ),
       ]);
       if (!isCurrentStorage(expectedStorage, generation, request)) return;
-      const visibleVaultIds = new Set(result.map((vault) => vault.id));
-      for (const id of visibleVaultIds) pendingCreatedVaultsRef.current.delete(id);
-      const refreshedVaults = [
-        ...result,
-        ...[...pendingCreatedVaultsRef.current.values()].filter((vault) => !visibleVaultIds.has(vault.id)),
-      ];
+      const visibleVaults = new Map(result.map((vault) => [vault.id, vault]));
+      const refreshedVaults = [...visibleVaults.values()].map((vault) => {
+        const pending = pendingCreatedVaultsRef.current.get(vault.id);
+        if (!pending) return vault;
+        pending.seen = true;
+        pending.missingSnapshots = 0;
+        // A room rename may take more than one sync to become visible. Keep the
+        // confirmed local name until the server snapshot catches up.
+        return pending.vault.name === vault.name ? vault : pending.vault;
+      });
+      for (const [id, pending] of pendingCreatedVaultsRef.current) {
+        if (visibleVaults.has(id)) continue;
+        if (pending.seen) {
+          pending.missingSnapshots += 1;
+          if (pending.missingSnapshots >= 2) {
+            pendingCreatedVaultsRef.current.delete(id);
+            continue;
+          }
+        }
+        refreshedVaults.push(pending.vault);
+      }
       setVaults(refreshedVaults);
       setInvites(pending);
       setError(null);
@@ -211,6 +232,8 @@ export function FileManager() {
   }
 
   function handleVaultRenamed(vaultId: string, name: string) {
+    const pending = pendingCreatedVaultsRef.current.get(vaultId);
+    if (pending) pending.vault = { ...pending.vault, name };
     if (rootVaultRef.current?.id === vaultId) {
       setRootVault((current) => (current?.id === vaultId ? { ...current, name } : current));
     }
@@ -248,7 +271,11 @@ export function FileManager() {
         core.createVault(expectedStorage, name, { signal: accountSignal ?? undefined }),
       );
       if (!isCurrentStorage(expectedStorage, generation)) return;
-      pendingCreatedVaultsRef.current.set(created.id, created);
+      pendingCreatedVaultsRef.current.set(created.id, {
+        vault: created,
+        seen: false,
+        missingSnapshots: 0,
+      });
       setVaults((prev) => {
         const current = prev ?? [];
         return current.some((vault) => vault.id === created.id)
