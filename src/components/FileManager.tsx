@@ -249,7 +249,12 @@ export function FileManager() {
       );
       if (!isCurrentStorage(expectedStorage, generation)) return;
       pendingCreatedVaultsRef.current.set(created.id, created);
-      setVaults((prev) => [...(prev ?? []), created]);
+      setVaults((prev) => {
+        const current = prev ?? [];
+        return current.some((vault) => vault.id === created.id)
+          ? current.map((vault) => (vault.id === created.id ? created : vault))
+          : [...current, created];
+      });
       setOwnedVaultIds((prev) => new Set(prev).add(created.id));
       if (navigationGenerationRef.current === navigationGeneration) {
         selectRoot(created);
