@@ -96,7 +96,8 @@ export function FileManager() {
   }
 
   const clearSelectedRoot = useCallback(() => {
-    navigationGenerationRef.current += 1;
+    // A background refresh is not user navigation. Keep it from cancelling
+    // an in-flight create that should select its newly created vault.
     rootVaultRef.current = null;
     setRootVault(null);
     setFolderPath([]);
@@ -132,10 +133,14 @@ export function FileManager() {
       for (const [id, pending] of pendingCreatedVaultsRef.current) {
         if (visibleVaults.has(id)) continue;
         if (pending.seen) {
-          pending.missingSnapshots += 1;
-          if (pending.missingSnapshots >= 2) {
-            pendingCreatedVaultsRef.current.delete(id);
-            continue;
+          if (rootVaultRef.current?.id === id) {
+            pending.missingSnapshots = 0;
+          } else {
+            pending.missingSnapshots += 1;
+            if (pending.missingSnapshots >= 2) {
+              pendingCreatedVaultsRef.current.delete(id);
+              continue;
+            }
           }
         }
         refreshedVaults.push(pending.vault);
@@ -162,6 +167,11 @@ export function FileManager() {
       setError(firstOwnershipError);
     } catch (err) {
       if (isCurrentStorage(expectedStorage, generation, request)) {
+        const selectedRoot = rootVaultRef.current;
+        if (selectedRoot && pendingCreatedVaultsRef.current.has(selectedRoot.id)) {
+          setError(formatOperationError(err));
+          return;
+        }
         setOwnedVaultIds(new Set());
         setVaults(null);
         setInvites(null);

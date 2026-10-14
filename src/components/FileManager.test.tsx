@@ -32,10 +32,12 @@ const POLL_MS = 2500;
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function fakeStorage(name: string) {
@@ -355,6 +357,85 @@ describe("FileManager refresh identity", () => {
     await flush();
 
     expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!b:localhost");
+  });
+
+  it("does not treat a failed background refresh as navigation during vault creation", async () => {
+    const storage = fakeStorage("shared");
+    const firstRefresh = deferred<{ id: string; name: string }[]>();
+    const creation = deferred<{ id: string; name: string }>();
+    vi.mocked(core.listVaults)
+      .mockReturnValueOnce(firstRefresh.promise as never)
+      .mockResolvedValue([]);
+    vi.mocked(core.createVault).mockReturnValue(creation.promise as never);
+    useStorageMock.mockReturnValue({ storage } as never);
+    const user = userEvent.setup();
+    render(<FileManager />);
+
+    await waitFor(() => expect(core.listVaults).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByTestId("create-vault"));
+    await waitFor(() => expect(core.createVault).toHaveBeenCalled());
+
+    await act(async () => {
+      firstRefresh.reject(new Error("Matrix request aborted"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    creation.resolve({ id: "!created:localhost", name: "Untitled vault" });
+
+    expect(await screen.findByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!created:localhost");
+  });
+
+  it("keeps a newly created vault selected when a refresh request aborts", async () => {
+    const storage = fakeStorage("shared");
+    const created = { id: "!created:localhost", name: "Untitled vault" };
+    let refreshCount = 0;
+    vi.mocked(core.listVaults).mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 2) throw new Error("Matrix request aborted");
+      return [];
+    });
+    vi.mocked(core.createVault).mockResolvedValue(created);
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<FileManager />);
+    await waitFor(() => expect(refreshCount).toBe(1));
+
+    fireEvent.click(screen.getByTestId("create-vault"));
+
+    expect(await screen.findByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", created.id);
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent("Matrix request aborted");
+  });
+
+  it("keeps a selected new vault through repeated missing sync snapshots", async () => {
+    vi.useFakeTimers();
+    const storage = fakeStorage("shared");
+    const created = { id: "!created:localhost", name: "Untitled vault" };
+    let refreshCount = 0;
+    vi.mocked(core.listVaults).mockImplementation(async () => {
+      refreshCount += 1;
+      return refreshCount === 2 ? [created] : [];
+    });
+    vi.mocked(core.createVault).mockResolvedValue(created);
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<FileManager />);
+    await flush();
+
+    fireEvent.click(screen.getByTestId("create-vault"));
+    await flush();
+    expect(refreshCount).toBe(2);
+    expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+
+    for (let i = 0; i < 2; i += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", created.id);
   });
 
   it("keeps a new vault selected while the server list catches up", async () => {
