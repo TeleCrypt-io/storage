@@ -46,6 +46,7 @@ export function FileManager() {
   const refreshRequestRef = useRef(0);
   const navigationGenerationRef = useRef(0);
   const mutationInflightRef = useRef(false);
+  const treeCreationCountRef = useRef(0);
   const rootVaultRef = useRef<VaultInfo | null>(null);
   // Keep a newly created room through brief gaps between sync snapshots.
   const pendingCreatedVaultsRef = useRef(new Map<string, PendingCreatedVault>());
@@ -106,7 +107,7 @@ export function FileManager() {
   }, []);
 
   const refreshVaults = useCallback(async () => {
-    if (!storage) return;
+    if (!storage || treeCreationCountRef.current > 0) return;
     const expectedStorage = storage;
     const generation = storageGenerationRef.current;
     const request = ++refreshRequestRef.current;
@@ -183,11 +184,24 @@ export function FileManager() {
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [accountSignal, clearSelectedRoot, storage]);
 
+  const handleTreeCreationStateChange = useCallback((creating: boolean) => {
+    if (creating) {
+      treeCreationCountRef.current += 1;
+      if (treeCreationCountRef.current === 1) refreshRequestRef.current += 1;
+      return;
+    }
+    if (treeCreationCountRef.current === 0) return;
+    treeCreationCountRef.current -= 1;
+    if (treeCreationCountRef.current === 0) void refreshVaults();
+  }, [refreshVaults]);
+
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      await refreshVaults();
+      if (!mutationInflightRef.current && treeCreationCountRef.current === 0) {
+        await refreshVaults();
+      }
       if (!stopped) timer = setTimeout(() => void poll(), POLL_MS);
     };
     // The refresh callback is guarded before every state update.
@@ -575,6 +589,7 @@ export function FileManager() {
             onOpenSubfolder={openSubfolder}
             onFolderRenamed={handleFolderRenamed}
             onFolderDeleted={handleFolderDeleted}
+            onTreeCreationStateChange={handleTreeCreationStateChange}
             selection={selection}
             onSelect={setSelection}
           />

@@ -28,6 +28,7 @@ type MutationIdentity = {
   generation: number;
   request: number;
   signal: AbortSignal | null;
+  treeCreation: boolean;
 };
 
 function validateUploadSelection(files: File[], preservePaths: boolean): string[] {
@@ -131,6 +132,7 @@ export function VaultContents({
   onOpenSubfolder,
   onFolderRenamed,
   onFolderDeleted,
+  onTreeCreationStateChange,
   selection,
   onSelect,
 }: {
@@ -142,6 +144,7 @@ export function VaultContents({
   onOpenSubfolder: (sub: FolderInfo) => void;
   onFolderRenamed: (folderId: string, name: string) => void;
   onFolderDeleted: (folderId: string) => void;
+  onTreeCreationStateChange?: (creating: boolean) => void;
   selection: Selection;
   onSelect: (sel: Selection) => void;
 }) {
@@ -194,19 +197,22 @@ export function VaultContents({
   }, [storage, treeId]);
   // oxlint-enable react/set-state-in-effect
 
-  function captureMutation(): MutationIdentity | null {
+  function captureMutation(treeCreation = false): MutationIdentity | null {
     if (!storage || mutationInFlightRef.current || (accountSignal?.aborted ?? false)) return null;
     mutationInFlightRef.current = true;
+    if (treeCreation) onTreeCreationStateChange?.(true);
     return {
       storage,
       treeId,
       generation: identityGenerationRef.current,
       request: ++mutationRequestRef.current,
       signal: accountSignal,
+      treeCreation,
     };
   }
 
   function releaseMutation(operation: MutationIdentity): void {
+    if (operation.treeCreation) onTreeCreationStateChange?.(false);
     if (mutationRequestRef.current === operation.request) mutationInFlightRef.current = false;
   }
 
@@ -341,7 +347,7 @@ export function VaultContents({
       e.target.value = "";
       return;
     }
-    const operation = captureMutation();
+    const operation = captureMutation(true);
     if (!operation) return;
     setBusy(true);
     setError(null);
@@ -543,7 +549,7 @@ export function VaultContents({
   }
 
   async function handleNewSubfolder() {
-    const operation = captureMutation();
+    const operation = captureMutation(true);
     if (!operation) return;
     setBusy(true);
     setError(null);

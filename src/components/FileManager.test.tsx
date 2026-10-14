@@ -20,6 +20,7 @@ vi.mock("../lib/core", async () => {
     createVault: vi.fn(),
     listFiles: vi.fn(),
     listSubfolders: vi.fn(),
+    createSubfolder: vi.fn(),
     getVaultDetails: vi.fn(),
     getFolderDetails: vi.fn(),
     listMembers: vi.fn(),
@@ -330,6 +331,56 @@ describe("FileManager refresh identity", () => {
     });
 
     expect(screen.getByTestId("select-vault-prompt")).toBeInTheDocument();
+  });
+
+  it("pauses top-level refresh during folder creation and resumes it afterward", async () => {
+    vi.useFakeTimers();
+    const storage = fakeStorage("shared");
+    const vault = { id: "!vault:localhost", name: "Shared" };
+    const creation = deferred<{ id: string; name: string }>();
+    const laterRefreshFailure = new Error("later vault refresh failed");
+    let refreshCount = 0;
+    vi.mocked(core.listVaults).mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 3) throw laterRefreshFailure;
+      return [vault];
+    });
+    vi.mocked(core.createSubfolder).mockReturnValue(creation.promise as never);
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<FileManager />);
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Shared" }));
+    fireEvent.click(screen.getByTestId("create-subfolder"));
+    await flush();
+    expect(core.createSubfolder).toHaveBeenCalled();
+    expect(refreshCount).toBe(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(refreshCount).toBe(1);
+    expect(screen.queryByTestId("vault-list-error")).not.toBeInTheDocument();
+
+    await act(async () => {
+      creation.resolve({ id: "!folder:localhost", name: "Untitled folder" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(refreshCount).toBe(2);
+    expect(screen.queryByTestId("vault-list-error")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(refreshCount).toBe(3);
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent(laterRefreshFailure.message);
   });
 
   it("does not auto-navigate after a pending vault creation if the user navigated away", async () => {
