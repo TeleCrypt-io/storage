@@ -61,6 +61,7 @@ export function RecoveryPanel({
   const refreshStatus = useCallback(async () => {
     if (!storage) return;
     const generation = generationRef.current;
+    setError(null);
     try {
       const status = await withSafeDeadline(accountSignal, (signal) => storage.keySafe.getStatus(signal));
       if (!isCurrent(storage, generation)) return;

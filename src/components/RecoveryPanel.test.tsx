@@ -38,6 +38,26 @@ describe("Decryption Key Safe account lifecycle", () => {
     expect(ready).not.toHaveBeenCalledWith(true);
   });
 
+  it("shows status checking while retrying after a status error", async () => {
+    const storage = fakeStorage();
+    const pending = deferred<Status>();
+    storage.keySafe.getStatus
+      .mockRejectedValueOnce(new Error("Status backend detail"))
+      .mockReturnValueOnce(pending.promise);
+    useStorageMock.mockReturnValue({ storage } as never);
+    const user = userEvent.setup();
+    render(<RecoveryPanel onReadinessChange={ready} />);
+
+    await screen.findByTestId("key-safe-error");
+    await user.click(screen.getByTestId("key-safe-retry"));
+    expect(await screen.findByTestId("key-safe-loading")).toBeVisible();
+    expect(screen.queryByTestId("key-safe-retry")).not.toBeInTheDocument();
+
+    await act(async () => pending.resolve({ state: "restore-required" }));
+    expect(await screen.findByTestId("key-safe-restore-required")).toBeVisible();
+    expect(screen.queryByTestId("key-safe-error")).not.toBeInTheDocument();
+  });
+
   it("starts room history sync only after the Safe is ready", async () => {
     const storage = fakeStorage({ state: "ready" });
     useStorageMock.mockReturnValue({ storage } as never);
