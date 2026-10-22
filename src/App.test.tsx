@@ -51,10 +51,10 @@ vi.mock("./lib/oidcAuth", () => ({
 
 vi.mock("./lib/revokeSession", async () => {
   const session = await vi.importActual<typeof import("./lib/session")>("./lib/session");
-  const revokeMatrixSession = vi.fn();
+  const revokeOidcSession = vi.fn();
   const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
     try {
-      await revokeMatrixSession(target, undefined, signal);
+      await revokeOidcSession(target, undefined, signal);
       session.clearPendingRevocation(target);
       return null;
     } catch (error) {
@@ -69,7 +69,7 @@ vi.mock("./lib/revokeSession", async () => {
       );
     }
   });
-  return { revokeMatrixSession, revokeOrRemember };
+  return { revokeOidcSession, revokeOrRemember };
 });
 
 const SESSION = {
@@ -206,6 +206,7 @@ async function openVault(
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
+  session.clearPendingRevocation();
   vi.clearAllMocks();
   vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
@@ -216,7 +217,7 @@ beforeEach(() => {
     createdAt: null,
     updatedAt: null,
   });
-  vi.mocked(revocation.revokeMatrixSession).mockResolvedValue(undefined);
+  vi.mocked(revocation.revokeOidcSession).mockResolvedValue(undefined);
 });
 
 describe("formatElapsed", () => {
@@ -492,9 +493,26 @@ describe("login", () => {
     vi.restoreAllMocks();
   });
 
+
+  it("retains newly issued refresh credentials when logout won the race and cleanup fails", async () => {
+    const { user } = await loginAndReachVaults();
+    const persistRefresh = vi.mocked(core.buildTokenRefreshFunction).mock.calls[0][2];
+    await user.click(screen.getByTestId("logout"));
+    vi.mocked(revocation.revokeOidcSession).mockRejectedValueOnce(new Error("revocation offline"));
+    await expect(persistRefresh({ accessToken: "late-access", refreshToken: "late-refresh" })).rejects.toThrow("Session is no longer active");
+    expect(sessionStorage.getItem(session.SESSION_STORAGE_KEY)).toBeNull();
+    expect(session.loadPendingRevocations()).toEqual([{
+      ...SESSION, accessToken: "late-access", refreshToken: "late-refresh",
+    }]);
+    expect(revocation.revokeOidcSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accessToken: "late-access", refreshToken: "late-refresh", oidcClientId: SESSION.oidcClientId }),
+      undefined, undefined,
+    );
+  });
+
   it("stops the client and locks the persisted session when remote logout cannot be confirmed", async () => {
     const { storage, user } = await loginAndReachVaults();
-    vi.mocked(revocation.revokeMatrixSession).mockRejectedValueOnce(
+    vi.mocked(revocation.revokeOidcSession).mockRejectedValueOnce(
       new Error("Session revocation failed"),
     );
 
@@ -505,6 +523,18 @@ describe("login", () => {
     expect(screen.getByTestId("auth-error")).not.toHaveTextContent("token-body-secret");
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).not.toBeNull();
     expect(storage.stopClient).toHaveBeenCalled();
+  });
+
+
+  it("does not revoke or clear an unrelated session that replaces the logout target", async () => {
+    const { user } = await loginAndReachVaults();
+    const replacement = { ...SESSION, userId: "@bob:localhost:8008", deviceId: "OTHERDEVICE", accessToken: "other-access", refreshToken: "other-refresh" };
+    vi.mocked(revocation.revokeOidcSession).mockImplementationOnce(async () => {
+      sessionStorage.setItem(session.SESSION_STORAGE_KEY, JSON.stringify(replacement));
+    });
+    await user.click(screen.getByTestId("logout"));
+    expect(revocation.revokeOidcSession).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(sessionStorage.getItem(session.SESSION_STORAGE_KEY)!)).toEqual(replacement);
   });
 
   it("revokes a callback token when tab session persistence fails", async () => {
@@ -521,7 +551,7 @@ describe("login", () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(revocation.revokeMatrixSession).toHaveBeenCalledWith(
+      expect(revocation.revokeOidcSession).toHaveBeenCalledWith(
         expect.objectContaining({ homeserver: SESSION.homeserver, accessToken: SESSION.accessToken }),
         undefined,
         expect.any(AbortSignal),

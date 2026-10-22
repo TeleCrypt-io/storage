@@ -1,12 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeSettings } from "./buildConfig";
 import { formatOperationError } from "./formatOperationError";
-import { revokeMatrixSession } from "./revokeSession";
+import { discoverOidcIssuer } from "./core";
+import { clearPendingRevocation, loadPendingRevocations, savePendingRevocation, SESSION_STORAGE_KEY } from "./session";
+import { revokeOrRemember, revokeOidcSession } from "./revokeSession";
 
 const target = {
   homeserver: getRuntimeSettings().homeserver,
   accessToken: "access-token-secret",
+  refreshToken: "refresh-token-secret",
+  oidcClientId: "client-id",
 };
+
+const endpoint = `${target.homeserver}/oauth2/revoke`;
+vi.mock("./core", async () => ({
+  ...await vi.importActual<typeof import("./core")>("./core"),
+  discoverOidcIssuer: vi.fn(),
+}));
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -20,31 +30,39 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(discoverOidcIssuer).mockResolvedValue({
+    issuer: `${target.homeserver}/`, revocation_endpoint: endpoint,
+  } as never);
+  clearPendingRevocation();
+  sessionStorage.clear();
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
-describe("revokeMatrixSession", () => {
-  it("uses the same-homeserver logout endpoint without a request body", async () => {
-    const response = new Response(null, { status: 204 });
-    Object.defineProperty(response, "url", { value: `${target.homeserver}/_matrix/client/v3/logout` });
+describe("revokeOidcSession", () => {
+  it("revokes the refresh grant at the validated OAuth endpoint", async () => {
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "url", { value: endpoint });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    await revokeMatrixSession(target, fetchMock);
+    await revokeOidcSession(target, fetchMock);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${target.homeserver}/_matrix/client/v3/logout`,
+      endpoint,
       expect.objectContaining({
         method: "POST",
         credentials: "omit",
         redirect: "manual",
-        headers: { Authorization: `Bearer ${target.accessToken}` },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
+    expect(Object.fromEntries(fetchMock.mock.calls[0][1]?.body as URLSearchParams)).toEqual({
+      token: target.refreshToken, token_type_hint: "refresh_token", client_id: target.oidcClientId,
+    });
   });
 
   it("retains a complete redacted HTTP failure body", async () => {
@@ -54,7 +72,7 @@ describe("revokeMatrixSession", () => {
 
     let caught: unknown;
     try {
-      await revokeMatrixSession(target, fetchMock);
+      await revokeOidcSession(target, fetchMock);
     } catch (error) {
       caught = error;
     }
@@ -68,19 +86,17 @@ describe("revokeMatrixSession", () => {
     expect(detail).not.toContain("body-access-secret");
   });
 
-  it("accepts an already-invalid token as confirmed cleanup", async () => {
-    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
+  it("does not accept a Matrix unknown-token error as OAuth revocation", async () => {
     const response = new Response(JSON.stringify({ errcode: "M_UNKNOWN_TOKEN", error: "unknown token" }), { status: 401 });
     Object.defineProperty(response, "url", { value: endpoint });
     const readBody = vi.spyOn(response, "text");
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    await expect(revokeMatrixSession(target, fetchMock)).resolves.toBeUndefined();
+    await expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
     expect(readBody).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an arbitrary 401 while retaining its complete redacted body", async () => {
-    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
     const response = new Response(
       "not an unknown-token response\naccess_token=body-access-secret\nfull detail",
       { status: 401 },
@@ -90,7 +106,7 @@ describe("revokeMatrixSession", () => {
 
     let caught: unknown;
     try {
-      await revokeMatrixSession(target, fetchMock);
+      await revokeOidcSession(target, fetchMock);
     } catch (error) {
       caught = error;
     }
@@ -108,7 +124,7 @@ describe("revokeMatrixSession", () => {
       new Response(null, { status: 302, headers: { location: "https://other.example/logout" } }),
     );
 
-    await expect(revokeMatrixSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
+    await expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
   });
 
@@ -117,15 +133,14 @@ describe("revokeMatrixSession", () => {
     const response = new Response(new ReadableStream({
       cancel: () => cancellation.promise,
     }), { status: 200 });
-    Object.defineProperty(response, "url", { value: `${target.homeserver}/_matrix/client/v3/logout` });
+    Object.defineProperty(response, "url", { value: endpoint });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    await expect(revokeMatrixSession(target, fetchMock)).resolves.toBeUndefined();
+    await expect(revokeOidcSession(target, fetchMock)).resolves.toBeUndefined();
     cancellation.reject(new Error("underlying stream disposal failed"));
   });
 
   it("preserves response-body read failures as a cause", async () => {
-    const endpoint = `${target.homeserver}/_matrix/client/v3/logout`;
     const response = new Response(null, { status: 503 });
     Object.defineProperty(response, "url", { value: endpoint });
     const bodyError = new Error("response body stream failed");
@@ -134,7 +149,7 @@ describe("revokeMatrixSession", () => {
 
     let caught: unknown;
     try {
-      await revokeMatrixSession(target, fetchMock);
+      await revokeOidcSession(target, fetchMock);
     } catch (error) {
       caught = error;
     }
@@ -148,7 +163,7 @@ describe("revokeMatrixSession", () => {
 
     let caught: unknown;
     try {
-      await revokeMatrixSession(target, fetchMock);
+      await revokeOidcSession(target, fetchMock);
     } catch (error) {
       caught = error;
     }
@@ -162,20 +177,20 @@ describe("revokeMatrixSession", () => {
     const pending = deferred<Response>();
     const fetchMock = vi.fn<typeof fetch>().mockReturnValue(pending.promise);
 
-    const result = revokeMatrixSession(target, fetchMock);
+    const result = revokeOidcSession(target, fetchMock);
     const assertion = expect(result).rejects.toMatchObject({ reason: "timed-out" });
     await vi.advanceTimersByTimeAsync(10_000);
 
     await assertion;
     expect(fetchMock.mock.calls[0][1]?.signal).toMatchObject({ aborted: true });
-    pending.resolve(new Response(null, { status: 204 }));
+    pending.resolve(new Response(null, { status: 200 }));
   });
 
   it("rejects a session target that is not the configured homeserver", async () => {
     const fetchMock = vi.fn<typeof fetch>();
 
     await expect(
-      revokeMatrixSession({ ...target, homeserver: "https://attacker.example.test/" }, fetchMock),
+      revokeOidcSession({ ...target, homeserver: "https://attacker.example.test/" }, fetchMock),
     ).rejects.toMatchObject({ reason: "failed" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -184,10 +199,89 @@ describe("revokeMatrixSession", () => {
     "rejects a token containing whitespace/control characters (%s)",
     async (accessToken) => {
       const fetchMock = vi.fn<typeof fetch>();
-      await expect(revokeMatrixSession({ ...target, accessToken }, fetchMock)).rejects.toMatchObject({
+      await expect(revokeOidcSession({ ...target, accessToken }, fetchMock)).rejects.toMatchObject({
         reason: "failed",
       });
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    { issuer: "https://untrusted.example/", revocation_endpoint: endpoint },
+    { issuer: `${target.homeserver}/`, revocation_endpoint: "https://untrusted.example/revoke" },
+    { issuer: `${target.homeserver}/`, revocation_endpoint: `${endpoint}?redirect=elsewhere` },
+    { issuer: `${target.homeserver}/` },
+  ])("rejects untrusted or missing discovery before sending credentials", async (metadata) => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(metadata as never);
+    const fetchMock = vi.fn<typeof fetch>();
+    await expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not start requests after caller cancellation", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchMock = vi.fn<typeof fetch>();
+    await expect(revokeOidcSession(target, fetchMock, controller.signal)).rejects.toMatchObject({ reason: "failed" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("bounds a hung discovery and response-body read", async () => {
+    vi.useFakeTimers();
+    vi.mocked(discoverOidcIssuer).mockReturnValueOnce(new Promise(() => undefined));
+    const discover = expect(revokeOidcSession(target)).rejects.toMatchObject({ reason: "timed-out" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await discover;
+    const response = new Response(null, { status: 503 });
+    Object.defineProperty(response, "url", { value: endpoint });
+    vi.spyOn(response, "text").mockReturnValue(new Promise(() => undefined));
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const read = expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "timed-out" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await read;
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it("persists the refresh grant after an outage and clears it after retry succeeds", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    expect(await revokeOrRemember(target)).toBeInstanceOf(Error);
+    expect(loadPendingRevocations()).toEqual([target]);
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "url", { value: endpoint });
+    vi.mocked(fetch).mockResolvedValue(response);
+    await expect(revokeOrRemember(loadPendingRevocations()[0])).resolves.toBeNull();
+    expect(loadPendingRevocations()).toEqual([]);
+    expect(Object.fromEntries(vi.mocked(fetch).mock.calls[1][1]?.body as URLSearchParams)).toEqual({
+      token: target.refreshToken, token_type_hint: "refresh_token", client_id: target.oidcClientId,
+    });
+  });
+
+  it("recovers legacy cleanup credentials only from the exact matching persisted session", async () => {
+    const pending = { homeserver: target.homeserver, accessToken: target.accessToken };
+    savePendingRevocation(pending);
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      ...target, userId: "@alice:localhost:8008", deviceId: "DEVICE1",
+    }));
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "url", { value: endpoint });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(response));
+    await expect(revokeOrRemember(loadPendingRevocations()[0])).resolves.toBeNull();
+    expect(Object.fromEntries(vi.mocked(fetch).mock.calls[0][1]?.body as URLSearchParams)).toEqual({
+      token: target.refreshToken, token_type_hint: "refresh_token", client_id: target.oidcClientId,
+    });
+    expect(loadPendingRevocations()).toEqual([]);
+  });
+
+  it("retains legacy credentials and explains missing client identity instead of claiming revocation", async () => {
+    const pending = { homeserver: target.homeserver, accessToken: target.accessToken };
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      ...target, accessToken: "unrelated", userId: "@alice:localhost:8008", deviceId: "DEVICE1",
+    }));
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const failure = await revokeOrRemember(pending);
+    expect(formatOperationError(failure)).toContain("original OAuth client ID is unavailable");
+    expect(loadPendingRevocations()).toEqual([pending]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
 });

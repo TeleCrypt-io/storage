@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MembersPanel } from "./MembersPanel";
@@ -159,4 +159,18 @@ describe("MembersPanel access state", () => {
 
     expect(screen.queryByTestId("members-error")).not.toBeInTheDocument();
   });
+  it("keeps a failed invite visible after the member list refreshes", async () => {
+    vi.useFakeTimers();
+    vi.mocked(core.listMembers).mockResolvedValue([]);
+    vi.mocked(core.shareVault).mockRejectedValueOnce(new Error("Invite may have completed"));
+    render(<MembersPanel vaultId="!vault:localhost" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    fireEvent.change(screen.getByTestId("share-user-id"), { target: { value: "@bob:localhost:8008" } });
+    fireEvent.click(screen.getByTestId("share-submit"));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByTestId("members-error")).toHaveTextContent("Invite may have completed");
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS * 2));
+    expect(screen.getByTestId("members-error")).toHaveTextContent("Invite may have completed");
+  });
+
 });

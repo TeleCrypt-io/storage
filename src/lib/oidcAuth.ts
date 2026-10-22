@@ -28,6 +28,7 @@ import {
   loadSession,
   saveOidcLoginIntent,
   savePendingRevocation,
+  sameSessionIdentity,
   isRuntimeMatrixDeviceId,
   isRuntimeMatrixUserId,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
@@ -211,6 +212,9 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
     if (cleanupError) throw cleanupError;
     throwIfAborted(signal);
     const rotatedSession = loadSession();
+    if (rotatedSession && !sameSessionIdentity(rotatedSession, existingSession)) {
+      throw new Error("Session changed during sign-in; try again");
+    }
     if (
       !rotatedSession ||
       (rotatedSession.accessToken === existingSession.accessToken &&
@@ -383,7 +387,12 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
     // only a tab-scoped retry record so the next sign-in attempt can retry revocation.
     const primary = safeCallbackFailure(error);
     if (homeserverIsRuntime) {
-      const target = { homeserver, accessToken };
+      const target = {
+        homeserver,
+        accessToken,
+        refreshToken: tokenResponse.refresh_token,
+        oidcClientId: oidcClientSettings.clientId,
+      };
       const cleanupError = await revokeOrRemember(target, signal, primary);
       if (cleanupError) throw cleanupError;
     }

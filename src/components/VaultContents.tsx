@@ -133,6 +133,7 @@ export function VaultContents({
   onFolderRenamed,
   onFolderDeleted,
   onTreeCreationStateChange,
+  onPartialUpload,
   selection,
   onSelect,
 }: {
@@ -145,13 +146,16 @@ export function VaultContents({
   onFolderRenamed: (folderId: string, name: string) => void;
   onFolderDeleted: (folderId: string) => void;
   onTreeCreationStateChange?: (creating: boolean) => void;
+  onPartialUpload?: (storage: TeleCryptIOStorage, error: core.MutationPartialError) => boolean;
   selection: Selection;
   onSelect: (sel: Selection) => void;
 }) {
   const { storage, accountSignal } = useStorage();
   const [files, setFiles] = useState<FileInfo[] | null>(null);
   const [subfolders, setSubfolders] = useState<FolderInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const error = [mutationError, refreshError].filter(Boolean).join("\n") || null;
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [renaming, setRenaming] = useState<{ kind: "file" | "folder"; id: string; name: string } | null>(
@@ -187,6 +191,7 @@ export function VaultContents({
     setFiles(null);
     setSubfolders(null);
     setError(null);
+    setRefreshError(null);
     setBusy(false);
     setRenaming(null);
     return () => {
@@ -253,12 +258,12 @@ export function VaultContents({
       }
       setFiles(fileList);
       setSubfolders(subList);
-      setError(null);
+      setRefreshError(null);
     } catch (err) {
       if (request === refreshRequestRef.current && isCurrentRefresh()) {
         setFiles(null);
         setSubfolders(null);
-        setError(formatOperationError(err));
+        setRefreshError(formatOperationError(err));
       }
     }
   }, [accountSignal, storage, treeId]);
@@ -279,6 +284,35 @@ export function VaultContents({
     };
   }, [refresh]);
 
+  function reportUploadFailure(operation: MutationIdentity, error: unknown) {
+    if (error instanceof core.MutationPartialError && error.operation === "file upload") {
+      if (onPartialUpload?.(operation.storage, error)) {
+        if (isCurrentMutation(operation)) setError(null);
+        return;
+      }
+    }
+    if (isCurrentMutation(operation)) setError(formatOperationError(error));
+  }
+
+  function uploadWithReceipt(
+    operation: MutationIdentity,
+    targetTreeId: string,
+    name: string,
+    bytes: Uint8Array,
+    mimetype: string,
+  ) {
+    return withAccountSignal(operation.signal, () =>
+      core.uploadFile(operation.storage, targetTreeId, name, bytes, mimetype, {
+        signal: operation.signal ?? undefined,
+      }).catch((error: unknown) => {
+        // Observe the SDK's final result even if the UI's account-abort race has
+        // already returned. Persist recovery IDs under the originating account.
+        reportUploadFailure(operation, error);
+        throw error;
+      }),
+    );
+  }
+
   async function uploadBytes(
     operation: MutationIdentity,
     targetTreeId: string,
@@ -290,14 +324,10 @@ export function VaultContents({
     setBusy(true);
     setError(null);
     try {
-      await withAccountSignal(operation.signal, () =>
-        core.uploadFile(operation.storage, targetTreeId, name, bytes, mimetype, {
-          signal: operation.signal ?? undefined,
-        }),
-      );
+      await uploadWithReceipt(operation, targetTreeId, name, bytes, mimetype);
       if (isCurrentMutation(operation)) await refresh(operation);
     } catch (err) {
-      if (isCurrentMutation(operation)) setError(formatOperationError(err));
+      reportUploadFailure(operation, err);
       return false;
     }
     return isCurrentMutation(operation);
@@ -325,7 +355,7 @@ export function VaultContents({
         if (!(await uploadBytes(operation, operation.treeId, file.name, bytes, mimetype))) return;
       }
     } catch (err) {
-      if (isCurrentMutation(operation)) setError(formatOperationError(err));
+      reportUploadFailure(operation, err);
     } finally {
       releaseMutation(operation);
       if (isCurrentMutation(operation)) {
@@ -367,21 +397,11 @@ export function VaultContents({
         );
         if (targetId === null || !isCurrentMutation(operation)) return;
         const fileName = rel.includes("/") ? rel.split("/").pop()! : rel;
-        await withAccountSignal(
-          operation.signal,
-          () => core.uploadFile(
-            operation.storage,
-            targetId,
-            fileName,
-            bytes,
-            file.type || "application/octet-stream",
-            { signal: operation.signal ?? undefined },
-          ),
-        );
+        await uploadWithReceipt(operation, targetId, fileName, bytes, file.type || "application/octet-stream");
       }
       if (isCurrentMutation(operation)) await refresh(operation);
     } catch (err) {
-      if (isCurrentMutation(operation)) setError(formatOperationError(err));
+      reportUploadFailure(operation, err);
     } finally {
       releaseMutation(operation);
       if (isCurrentMutation(operation)) {
@@ -415,7 +435,7 @@ export function VaultContents({
         }
       }
     } catch (err) {
-      if (isCurrentMutation(operation)) setError(formatOperationError(err));
+      reportUploadFailure(operation, err);
     } finally {
       releaseMutation(operation);
       if (isCurrentMutation(operation)) setBusy(false);

@@ -92,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("VaultContents mutation identity", () => {
@@ -607,4 +608,23 @@ describe("VaultContents mutation identity", () => {
     expect(onOpenSubfolder).toHaveBeenCalledWith({ id: "!child:localhost", name: "Child" });
     expect(onSelect).not.toHaveBeenCalled();
   });
+  it("keeps an upload warning until an explicit retry, across automatic polls", async () => {
+    vi.useFakeTimers();
+    vi.mocked(core.uploadFile).mockRejectedValueOnce(new Error("Upload may have completed; check before retrying"));
+    renderContents("!vault-a:localhost", vi.fn());
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const file = new File(["data"], "data.txt", { type: "text/plain" });
+    Object.defineProperty(file, "arrayBuffer", { value: async () => new TextEncoder().encode("data").buffer });
+    fireEvent.change(screen.getByTestId("file-input"), { target: { files: [file] } });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByTestId("vault-detail-error")).toHaveTextContent("Upload may have completed");
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(screen.getByTestId("vault-detail-error")).toHaveTextContent("Upload may have completed");
+    vi.mocked(core.uploadFile).mockResolvedValueOnce({ id: "$retry:localhost", name: file.name });
+    fireEvent.change(screen.getByTestId("file-input"), { target: { files: [file] } });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(core.uploadFile).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("vault-detail-error")).not.toBeInTheDocument();
+  });
+
 });

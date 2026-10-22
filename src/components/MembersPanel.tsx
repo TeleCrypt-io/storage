@@ -29,7 +29,9 @@ function isCanonicalMemberId(value: unknown): value is string {
 export function MembersPanel({ vaultId }: { vaultId: string }) {
   const { storage, session, accountSignal } = useStorage();
   const [members, setMembers] = useState<Member[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const error = [mutationError, refreshError].filter(Boolean).join("\n") || null;
   const [busy, setBusy] = useState(false);
   const [shareUserId, setShareUserId] = useState("");
   const identityRef = useRef<{ storage: typeof storage; vaultId: string }>({
@@ -58,6 +60,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     mutationInFlightRef.current = false;
     setMembers(null);
     setError(null);
+    setRefreshError(null);
     setShareUserId("");
     setBusy(false);
     return () => {
@@ -83,12 +86,12 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
       );
       if (isCurrent()) {
         setMembers(nextMembers);
-        setError(null);
+        setRefreshError(null);
       }
     } catch (err) {
       if (isCurrent()) {
         setMembers(null);
-        setError(formatOperationError(err));
+        setRefreshError(formatOperationError(err));
       }
     }
   }, [accountSignal, storage, vaultId]);

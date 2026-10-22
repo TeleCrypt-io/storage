@@ -4,17 +4,18 @@ import * as core from "../lib/core";
 import type { FolderInfo, VaultInfo } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
+import {
+  clearPendingUpload,
+  loadPendingUploads,
+  savePendingUpload,
+  samePendingUpload,
+  type PendingUpload,
+} from "../lib/pendingUploads";
 import { DetailsPanel, type Selection } from "./DetailsPanel";
 import { VaultContents } from "./VaultContents";
 
 const POLL_MS = 2500;
 const UNTITLED = "Untitled vault";
-
-type PendingCreatedVault = {
-  vault: VaultInfo;
-  seen: boolean;
-  missingSnapshots: number;
-};
 
 function ownershipError(ownership: core.VaultOwnership): string | null {
   return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
@@ -29,11 +30,19 @@ function uniqueUntitledName(existing: VaultInfo[]): string {
 }
 
 export function FileManager() {
-  const { storage, accountSignal } = useStorage();
+  const { storage, session, accountSignal } = useStorage();
+  const accountHomeserver = session?.homeserver;
+  const accountUserId = session?.userId;
   const [vaults, setVaults] = useState<VaultInfo[] | null>(null);
   const [invites, setInvites] = useState<VaultInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const error = [mutationError, refreshError].filter(Boolean).join("\n") || null;
   const [busy, setBusy] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const cleanupInflightRef = useRef(false);
   const [rootVault, setRootVault] = useState<VaultInfo | null>(null);
   const [ownedVaultIds, setOwnedVaultIds] = useState<Set<string>>(new Set());
   const [folderPath, setFolderPath] = useState<FolderInfo[]>([]);
@@ -48,8 +57,9 @@ export function FileManager() {
   const mutationInflightRef = useRef(false);
   const treeCreationCountRef = useRef(0);
   const rootVaultRef = useRef<VaultInfo | null>(null);
-  // Keep a newly created room through brief gaps between sync snapshots.
-  const pendingCreatedVaultsRef = useRef(new Map<string, PendingCreatedVault>());
+  // Keep confirmed local selection if its first refresh fails. A successful
+  // listing is authoritative even when another client has already deleted it.
+  const pendingVaultIdsRef = useRef(new Set<string>());
   // Keep identity and root selection current during render so callbacks cannot observe a prior
   // account between render and effect cleanup.
   // oxlint-disable-next-line react/refs
@@ -66,7 +76,7 @@ export function FileManager() {
     refreshRequestRef.current += 1;
     navigationGenerationRef.current += 1;
     mutationInflightRef.current = false;
-    pendingCreatedVaultsRef.current.clear();
+    pendingVaultIdsRef.current.clear();
     rootVaultRef.current = null;
     setVaults(null);
     setInvites(null);
@@ -76,12 +86,74 @@ export function FileManager() {
     setSelection(null);
     setSidebarRenaming(null);
     setError(null);
+    setRefreshError(null);
     return () => {
       storageGenerationRef.current += 1;
       refreshRequestRef.current += 1;
     };
   }, [storage]);
   // oxlint-enable react/set-state-in-effect
+
+  // Cleanup receipts contain only remote identifiers and survive reload, logout, and tab closure.
+  // oxlint-disable react/set-state-in-effect
+  useEffect(() => {
+    setPendingUploads([]);
+    setCleanupError(null);
+    setCleanupBusy(false);
+    cleanupInflightRef.current = false;
+    if (!accountHomeserver || !accountUserId) return;
+    try {
+      setPendingUploads(loadPendingUploads({ homeserver: accountHomeserver, userId: accountUserId }));
+    } catch (error) {
+      setCleanupError(formatOperationError(error));
+    }
+  }, [storage, accountHomeserver, accountUserId]);
+  // oxlint-enable react/set-state-in-effect
+
+  function handlePartialUpload(expectedStorage: core.TeleCryptIOStorage, failure: core.MutationPartialError) {
+    if (!session) return false;
+    const isCurrent = storageRef.current === expectedStorage && !accountSignal?.aborted;
+    const [mediaId, fileId] = failure.completedIds;
+    if (failure.operation !== "file upload" || !failure.treeId || !mediaId) return false;
+    const target = { treeId: failure.treeId, mediaId, fileId };
+    if (isCurrent) {
+      setCleanupError(formatOperationError(failure));
+      setPendingUploads((current) => current.some((item) => samePendingUpload(item, target)) ? current : [...current, target]);
+    }
+    try {
+      savePendingUpload(session, target);
+    } catch (error) {
+      if (isCurrent) setCleanupError(`Upload cleanup details could not be saved; keep this page open. ${formatOperationError(error)}`);
+    }
+    return true;
+  }
+
+  async function handleCleanupUpload(target: PendingUpload) {
+    if (!storage || !session || cleanupInflightRef.current) return;
+    const expectedStorage = storage;
+    const generation = storageGenerationRef.current;
+    cleanupInflightRef.current = true;
+    setCleanupBusy(true);
+    setCleanupError(null);
+    try {
+      await withAccountSignal(accountSignal, () => core.cleanupFileUpload(
+        expectedStorage, target.treeId, target.mediaId, target.fileId,
+        { signal: accountSignal ?? undefined },
+      ));
+      // Persist confirmed cleanup even if the user navigated while the request was in flight.
+      clearPendingUpload(session, target);
+      if (isCurrentStorage(expectedStorage, generation)) {
+        setPendingUploads((current) => current.filter((item) => !samePendingUpload(item, target)));
+      }
+    } catch (error) {
+      if (isCurrentStorage(expectedStorage, generation)) setCleanupError(formatOperationError(error));
+    } finally {
+      if (isCurrentStorage(expectedStorage, generation)) {
+        cleanupInflightRef.current = false;
+        setCleanupBusy(false);
+      }
+    }
+  }
 
   function isCurrentStorage(
     expectedStorage: typeof storage,
@@ -121,34 +193,12 @@ export function FileManager() {
         ),
       ]);
       if (!isCurrentStorage(expectedStorage, generation, request)) return;
-      const visibleVaults = new Map(result.map((vault) => [vault.id, vault]));
-      const refreshedVaults = [...visibleVaults.values()].map((vault) => {
-        const pending = pendingCreatedVaultsRef.current.get(vault.id);
-        if (!pending) return vault;
-        pending.seen = true;
-        pending.missingSnapshots = 0;
-        // A room rename may take more than one sync to become visible. Keep the
-        // confirmed local name until the server snapshot catches up.
-        return pending.vault.name === vault.name ? vault : pending.vault;
-      });
-      for (const [id, pending] of pendingCreatedVaultsRef.current) {
-        if (visibleVaults.has(id)) continue;
-        if (pending.seen) {
-          if (rootVaultRef.current?.id === id) {
-            pending.missingSnapshots = 0;
-          } else {
-            pending.missingSnapshots += 1;
-            if (pending.missingSnapshots >= 2) {
-              pendingCreatedVaultsRef.current.delete(id);
-              continue;
-            }
-          }
-        }
-        refreshedVaults.push(pending.vault);
-      }
+      // The request generation excludes pre-mutation reads. This successful
+      // result owns subsequent names and membership, including remote deletions.
+      const refreshedVaults = result;
+      pendingVaultIdsRef.current.clear();
       setVaults(refreshedVaults);
       setInvites(pending);
-      setError(null);
       const selectedRoot = rootVaultRef.current;
       const refreshedRoot = selectedRoot && refreshedVaults.find((vault) => vault.id === selectedRoot.id);
       if (selectedRoot && !refreshedRoot) {
@@ -165,19 +215,19 @@ export function FileManager() {
         if (!firstOwnershipError) firstOwnershipError = ownershipError(ownership);
       }
       setOwnedVaultIds(ownedIds);
-      setError(firstOwnershipError);
+      setRefreshError(firstOwnershipError);
     } catch (err) {
       if (isCurrentStorage(expectedStorage, generation, request)) {
         const selectedRoot = rootVaultRef.current;
-        if (selectedRoot && pendingCreatedVaultsRef.current.has(selectedRoot.id)) {
-          setError(formatOperationError(err));
+        if (selectedRoot && pendingVaultIdsRef.current.has(selectedRoot.id)) {
+          setRefreshError(formatOperationError(err));
           return;
         }
         setOwnedVaultIds(new Set());
         setVaults(null);
         setInvites(null);
         clearSelectedRoot();
-        setError(formatOperationError(err));
+        setRefreshError(formatOperationError(err));
       }
     }
   // isCurrentStorage is intentionally a render-local identity guard.
@@ -256,8 +306,7 @@ export function FileManager() {
   }
 
   function handleVaultRenamed(vaultId: string, name: string) {
-    const pending = pendingCreatedVaultsRef.current.get(vaultId);
-    if (pending) pending.vault = { ...pending.vault, name };
+    pendingVaultIdsRef.current.add(vaultId);
     if (rootVaultRef.current?.id === vaultId) {
       setRootVault((current) => (current?.id === vaultId ? { ...current, name } : current));
     }
@@ -295,11 +344,7 @@ export function FileManager() {
         core.createVault(expectedStorage, name, { signal: accountSignal ?? undefined }),
       );
       if (!isCurrentStorage(expectedStorage, generation)) return;
-      pendingCreatedVaultsRef.current.set(created.id, {
-        vault: created,
-        seen: false,
-        missingSnapshots: 0,
-      });
+      pendingVaultIdsRef.current.add(created.id);
       setVaults((prev) => {
         const current = prev ?? [];
         return current.some((vault) => vault.id === created.id)
@@ -380,7 +425,7 @@ export function FileManager() {
       // A successful delete changes the SDK's ownership projection immediately. Refresh based on
       // the confirmed mutation result, not on the post-delete owner snapshot.
       if (!isCurrentStorage(expectedStorage, generation)) return;
-      pendingCreatedVaultsRef.current.delete(vault.id);
+      pendingVaultIdsRef.current.delete(vault.id);
       if (rootVaultRef.current?.id === vault.id) {
         rootVaultRef.current = null;
         setRootVault(null);
@@ -575,6 +620,20 @@ export function FileManager() {
       </aside>
 
       <section className="vault-main">
+        {(pendingUploads.length > 0 || cleanupError) && (
+          <div className="error" data-testid="pending-upload-cleanup">
+            {pendingUploads.map((target) => (
+              <p key={`${target.treeId}:${target.mediaId}`}>
+                An upload did not finish. Remove its stored data before retrying.
+                {" "}
+                <button className="btn btn-sm" disabled={cleanupBusy} onClick={() => void handleCleanupUpload(target)} data-testid="cleanup-upload">
+                  Clean up upload
+                </button>
+              </p>
+            ))}
+            {cleanupError && <p data-testid="upload-cleanup-error">{cleanupError}</p>}
+          </div>
+        )}
         {!currentTree ? (
           <div className="empty-panel muted" data-testid="select-vault-prompt">
             Select or create a vault to browse files.
@@ -590,6 +649,7 @@ export function FileManager() {
             onFolderRenamed={handleFolderRenamed}
             onFolderDeleted={handleFolderDeleted}
             onTreeCreationStateChange={handleTreeCreationStateChange}
+            onPartialUpload={handlePartialUpload}
             selection={selection}
             onSelect={setSelection}
           />

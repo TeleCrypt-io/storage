@@ -16,14 +16,16 @@ export interface Session {
   oidcClientId: string;
 }
 
+export function sameSessionIdentity(a: Session, b: Session): boolean {
+  return a.homeserver === b.homeserver && a.userId === b.userId &&
+    a.deviceId === b.deviceId && a.oidcClientId === b.oidcClientId;
+}
+
 function sessionsEqual(a: Session, b: Session): boolean {
   return (
-    a.homeserver === b.homeserver &&
-    a.userId === b.userId &&
-    a.deviceId === b.deviceId &&
+    sameSessionIdentity(a, b) &&
     a.accessToken === b.accessToken &&
-    a.refreshToken === b.refreshToken &&
-    a.oidcClientId === b.oidcClientId
+    a.refreshToken === b.refreshToken
   );
 }
 
@@ -44,6 +46,8 @@ export interface OidcLoginIntent {
 export interface PendingRevocation {
   homeserver: string;
   accessToken: string;
+  refreshToken?: string;
+  oidcClientId?: string;
 }
 
 // A storage denial must not make an issued bearer token disappear without a retry path. This
@@ -240,12 +244,15 @@ function isPendingRevocation(value: unknown): value is PendingRevocation {
   return (
     isNonEmptyString(parsed.homeserver) &&
     isSessionToken(parsed.accessToken) &&
+    (parsed.refreshToken === undefined || isSessionToken(parsed.refreshToken)) &&
+    (parsed.oidcClientId === undefined || isOpaqueString(parsed.oidcClientId)) &&
     matchesRuntimeHomeserver(parsed.homeserver)
   );
 }
 
 function sameRevocation(a: PendingRevocation, b: PendingRevocation): boolean {
-  return a.homeserver === b.homeserver && a.accessToken === b.accessToken;
+  return a.homeserver === b.homeserver && a.accessToken === b.accessToken &&
+    a.refreshToken === b.refreshToken && a.oidcClientId === b.oidcClientId;
 }
 
 export function loadPendingRevocations(): PendingRevocation[] {

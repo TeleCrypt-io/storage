@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { FileManager } from "./FileManager";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
+import { loadPendingUploads } from "../lib/pendingUploads";
 import type { TeleCryptIOStorage } from "../lib/core";
 
 vi.mock("../context/StorageContext", () => ({
@@ -26,6 +27,8 @@ vi.mock("../lib/core", async () => {
     listMembers: vi.fn(),
     renameVault: vi.fn(),
     deleteVault: vi.fn(),
+    uploadFile: vi.fn(),
+    cleanupFileUpload: vi.fn(),
   };
 });
 
@@ -69,6 +72,8 @@ async function flush() {
 const useStorageMock = vi.mocked(useStorage);
 
 beforeEach(() => {
+  sessionStorage.clear();
+  localStorage.clear();
   vi.clearAllMocks();
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
   vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
@@ -416,7 +421,7 @@ describe("FileManager refresh identity", () => {
     const creation = deferred<{ id: string; name: string }>();
     vi.mocked(core.listVaults)
       .mockReturnValueOnce(firstRefresh.promise as never)
-      .mockResolvedValue([]);
+      .mockResolvedValue([{ id: "!created:localhost", name: "Untitled vault" }]);
     vi.mocked(core.createVault).mockReturnValue(creation.promise as never);
     useStorageMock.mockReturnValue({ storage } as never);
     const user = userEvent.setup();
@@ -458,7 +463,7 @@ describe("FileManager refresh identity", () => {
     expect(screen.getByTestId("vault-list-error")).toHaveTextContent("Matrix request aborted");
   });
 
-  it("keeps a selected new vault through repeated missing sync snapshots", async () => {
+  it("removes an acknowledged new vault when the server no longer lists it", async () => {
     vi.useFakeTimers();
     const storage = fakeStorage("shared");
     const created = { id: "!created:localhost", name: "Untitled vault" };
@@ -485,11 +490,12 @@ describe("FileManager refresh identity", () => {
       });
     }
 
-    expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
-    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", created.id);
+    expect(screen.queryByTestId("rename-vault-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vault-detail")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vault-item")).not.toBeInTheDocument();
   });
 
-  it("keeps a new vault selected while the server list catches up", async () => {
+  it("removes a newly created vault already absent from the first post-creation listing", async () => {
     const storage = fakeStorage("shared");
     vi.mocked(core.listVaults).mockResolvedValue([]);
     vi.mocked(core.createVault).mockResolvedValue({ id: "!created:localhost", name: "Untitled vault" });
@@ -502,12 +508,12 @@ describe("FileManager refresh identity", () => {
     await waitFor(() => expect(core.listVaults).toHaveBeenCalledTimes(2));
     await flush();
 
-    expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!created:localhost");
-    expect(screen.getByTestId("vault-item")).toHaveAttribute("data-vault-id", "!created:localhost");
-    expect(screen.getByTestId("rename-vault-input")).toHaveValue("Untitled vault");
+    expect(screen.queryByTestId("vault-detail")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vault-item")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rename-vault-input")).not.toBeInTheDocument();
   });
 
-  it("keeps a renamed new vault selected across one missing sync snapshot", async () => {
+  it("removes a renamed vault absent from the post-rename listing", async () => {
     const storage = fakeStorage("shared");
     const created = { id: "!created:localhost", name: "Untitled vault" };
     const renamed = { id: created.id, name: "TreeVault" };
@@ -531,10 +537,9 @@ describe("FileManager refresh identity", () => {
     fireEvent.keyDown(renameInput, { key: "Enter" });
 
     await waitFor(() => expect(refreshCount).toBeGreaterThanOrEqual(3));
-    await waitFor(() => expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", created.id));
-    expect(screen.getAllByTestId("vault-item")).toHaveLength(1);
-    expect(within(screen.getByTestId("vault-item")).getByRole("button", { name: renamed.name })).toBeInTheDocument();
-    expect(screen.queryByTestId("select-vault-prompt")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId("vault-detail")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("vault-item")).not.toBeInTheDocument();
+    expect(screen.getByTestId("select-vault-prompt")).toBeInTheDocument();
   });
 
   it("does not duplicate a vault already seen by sync before creation returns", async () => {
@@ -559,4 +564,137 @@ describe("FileManager refresh identity", () => {
     await waitFor(() => expect(screen.getAllByTestId("rename-vault-input")).toHaveLength(1));
     expect(screen.getAllByTestId("vault-item")).toHaveLength(1);
   });
+  it("shows remote renames after a local creation and rename are acknowledged", async () => {
+    vi.useFakeTimers();
+    const storage = fakeStorage("shared");
+    let snapshot: core.VaultInfo[] = [];
+    vi.mocked(core.listVaults).mockImplementation(async () => snapshot);
+    vi.mocked(core.createVault).mockImplementation(async (_storage, name) => {
+      const vault = { id: "!created:localhost", name };
+      snapshot = [vault];
+      return vault;
+    });
+    vi.mocked(core.renameVault).mockImplementation(async (_storage, id, name) => {
+      snapshot = [{ id, name }];
+      return snapshot[0];
+    });
+    useStorageMock.mockReturnValue({ storage } as never);
+    render(<FileManager />);
+    await flush();
+    fireEvent.click(screen.getByTestId("create-vault"));
+    await flush();
+    fireEvent.change(screen.getByTestId("rename-vault-input"), { target: { value: "Local name" } });
+    fireEvent.keyDown(screen.getByTestId("rename-vault-input"), { key: "Enter" });
+    await flush();
+    expect(within(screen.getByTestId("vault-list")).getByText("Local name")).toBeInTheDocument();
+    snapshot = [{ id: "!created:localhost", name: "Changed elsewhere" }];
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(screen.queryByText("Local name")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("vault-list")).getByText("Changed elsewhere")).toBeInTheDocument();
+  });
+
+  it("keeps a failed mutation visible through successful and failed list polls", async () => {
+    vi.useFakeTimers();
+    useStorageMock.mockReturnValue({ storage: fakeStorage("shared") } as never);
+    vi.mocked(core.listVaults).mockResolvedValue([]);
+    vi.mocked(core.createVault).mockRejectedValue(new Error("Creation may have completed"));
+    render(<FileManager />);
+    await flush();
+    fireEvent.click(screen.getByTestId("create-vault"));
+    await flush();
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent("Creation may have completed");
+    vi.mocked(core.listVaults).mockRejectedValueOnce(new Error("List unavailable"));
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent("Creation may have completed");
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent("List unavailable");
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(screen.getByTestId("vault-list-error")).toHaveTextContent("Creation may have completed");
+    expect(screen.getByTestId("vault-list-error")).not.toHaveTextContent("List unavailable");
+  });
+
+  it("retains exact partial-upload cleanup across navigation, reload, and a failed cleanup", async () => {
+    const storage = fakeStorage("shared");
+    const session = {
+      homeserver: "http://localhost:8008", userId: "@alice:localhost:8008",
+      deviceId: "DEVICE1", accessToken: "access", refreshToken: "refresh", oidcClientId: "client",
+    };
+    const vault = { id: "!vault:localhost", name: "Vault" };
+    vi.mocked(core.listVaults).mockResolvedValue([vault]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!child:localhost", name: "nested" }]);
+    vi.mocked(core.getVaultDetails).mockResolvedValue({ ...vault, createdAt: null, memberCount: 1 });
+    const failure = Object.assign(new core.MutationPartialError("file upload", ["mxc://localhost/media", "$attachment:localhost"]), { treeId: "!child:localhost" });
+    vi.mocked(core.uploadFile).mockRejectedValueOnce(failure);
+    vi.mocked(core.cleanupFileUpload).mockRejectedValueOnce(new Error("Cleanup unavailable")).mockResolvedValue(undefined);
+    useStorageMock.mockReturnValue({ storage, session } as never);
+    const user = userEvent.setup();
+    const view = render(<FileManager />);
+    await user.click(await screen.findByRole("button", { name: "Vault" }));
+    const file = new File(["data"], "data.txt", { type: "text/plain" });
+    Object.defineProperty(file, "webkitRelativePath", { value: "nested/data.txt" });
+    await user.upload(screen.getByTestId("folder-input"), file);
+    expect(await screen.findByTestId("cleanup-upload")).toBeEnabled();
+    const receipt = { treeId: "!child:localhost", mediaId: "mxc://localhost/media", fileId: "$attachment:localhost" };
+    expect(loadPendingUploads(session)).toEqual([receipt]);
+    await user.click(screen.getByTestId("nav-up"));
+    expect(screen.getByTestId("cleanup-upload")).toBeInTheDocument();
+    view.unmount();
+    render(<FileManager />);
+    await user.click(await screen.findByTestId("cleanup-upload"));
+    expect(await screen.findByTestId("upload-cleanup-error")).toHaveTextContent("Cleanup unavailable");
+    expect(loadPendingUploads(session)).toEqual([receipt]);
+    expect(core.cleanupFileUpload).toHaveBeenLastCalledWith(storage, receipt.treeId, receipt.mediaId, receipt.fileId, { signal: undefined });
+    await user.click(screen.getByTestId("cleanup-upload"));
+    await waitFor(() => expect(screen.queryByTestId("pending-upload-cleanup")).not.toBeInTheDocument());
+    expect(loadPendingUploads(session)).toEqual([]);
+  });
+
+  it("saves late partial-upload receipts to the original account after logout", async () => {
+    const storage = fakeStorage("alice");
+    const accountSignal = new AbortController();
+    const session = {
+      homeserver: "http://localhost:8008", userId: "@alice:localhost:8008",
+      deviceId: "DEVICE1", accessToken: "access", refreshToken: "refresh", oidcClientId: "client",
+    };
+    const vault = { id: "!vault:localhost", name: "Vault" };
+    vi.mocked(core.listVaults).mockResolvedValue([vault]);
+    vi.mocked(core.getVaultDetails).mockResolvedValue({ ...vault, createdAt: null, memberCount: 1 });
+    const upload = deferred<core.FileInfo>();
+    vi.mocked(core.uploadFile).mockReturnValueOnce(upload.promise);
+    useStorageMock.mockReturnValue({ storage, session, accountSignal: accountSignal.signal } as never);
+    const user = userEvent.setup();
+    const view = render(<FileManager />);
+    await user.click(await screen.findByRole("button", { name: "Vault" }));
+    await user.upload(screen.getByTestId("file-input"), new File(["data"], "data.txt"));
+    await waitFor(() => expect(core.uploadFile).toHaveBeenCalled());
+    accountSignal.abort();
+    const other = { ...session, userId: "@bob:localhost:8008" };
+    useStorageMock.mockReturnValue({ storage: fakeStorage("bob"), session: other } as never);
+    view.rerender(<FileManager />);
+    await flush();
+    upload.reject(Object.assign(new core.MutationPartialError("file upload", ["mxc://localhost/late", "$late:localhost"]), { treeId: vault.id }));
+    await waitFor(() => expect(loadPendingUploads(session)).toEqual([
+      { treeId: vault.id, mediaId: "mxc://localhost/late", fileId: "$late:localhost" },
+    ]));
+    expect(loadPendingUploads(other)).toEqual([]);
+    expect(screen.queryByTestId("cleanup-upload")).not.toBeInTheDocument();
+  });
+
+  it("accepts a remote rename already present in the first post-creation listing", async () => {
+    vi.useFakeTimers();
+    useStorageMock.mockReturnValue({ storage: fakeStorage("shared") } as never);
+    vi.mocked(core.listVaults).mockResolvedValueOnce([]).mockResolvedValue([{ id: "!created:localhost", name: "Already renamed elsewhere" }]);
+    vi.mocked(core.createVault).mockResolvedValue({ id: "!created:localhost", name: "Untitled vault" });
+    render(<FileManager />);
+    await flush();
+    fireEvent.click(screen.getByTestId("create-vault"));
+    await flush();
+    fireEvent.keyDown(screen.getByTestId("rename-vault-input"), { key: "Escape" });
+    expect(within(screen.getByTestId("vault-list")).getByText("Already renamed elsewhere")).toBeInTheDocument();
+    vi.mocked(core.listVaults).mockResolvedValue([]);
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(screen.queryByTestId("vault-item")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vault-detail")).not.toBeInTheDocument();
+  });
+
 });

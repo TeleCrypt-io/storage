@@ -1,7 +1,10 @@
-import { getRuntimeSettings } from "./buildConfig";
+import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
+import { discoverOidcIssuer } from "./core";
+import type { PendingRevocation } from "./session";
 import {
   clearPendingRevocation,
   isSessionToken,
+  loadSession,
   savePendingRevocation,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
@@ -10,18 +13,16 @@ import { sanitizeDiagnosticError, sanitizeDiagnosticText } from "./errorDetails"
 
 const SESSION_REVOKE_TIMEOUT_MS = 10_000;
 
-export type SessionRevocationTarget = {
-  homeserver: string;
-  accessToken: string;
-};
+export type SessionRevocationTarget = PendingRevocation;
 
 export type SessionRevocationFailure = "failed" | "timed-out";
 
 export async function revokeOrRemember(
-  target: SessionRevocationTarget,
+  requestedTarget: SessionRevocationTarget,
   signal?: AbortSignal,
   primaryError?: unknown,
 ): Promise<Error | null> {
+  let target = requestedTarget;
   const failure = (message: string, causes: unknown[]): Error => {
     const filtered = causes
       .filter((cause): cause is unknown => cause !== undefined)
@@ -38,8 +39,15 @@ export async function revokeOrRemember(
   };
 
   try {
-    await revokeMatrixSession(target, undefined, signal);
+    if (!target.oidcClientId) {
+      const session = loadSession();
+      if (session?.homeserver === target.homeserver && session.accessToken === target.accessToken) {
+        target = { ...target, refreshToken: session.refreshToken, oidcClientId: session.oidcClientId };
+      }
+    }
+    await revokeOidcSession(target, undefined, signal);
     clearPendingRevocation(target);
+    clearPendingRevocation(requestedTarget);
     return null;
   } catch (error) {
     let recorded = false;
@@ -75,7 +83,7 @@ export class SessionRevocationError extends Error {
   }
 }
 
-function logoutEndpoint(homeserver: string): string {
+function assertRevocationHomeserver(homeserver: string): void {
   let runtimeHomeserver: URL;
   let sessionHomeserver: URL;
   try {
@@ -90,7 +98,6 @@ function logoutEndpoint(homeserver: string): string {
   if (sessionHomeserver.toString() !== runtimeHomeserver.toString()) {
     throw new SessionRevocationError("failed");
   }
-  return new URL("/_matrix/client/v3/logout", runtimeHomeserver).toString();
 }
 
 function cancelResponseBody(response: Response): void {
@@ -131,30 +138,26 @@ async function readResponseFailure(response: Response): Promise<Error> {
   return body.ok ? responseFailureFromText(response, body.text) : body.error;
 }
 
-function isUnknownAccessTokenResponse(status: number, body: unknown): boolean {
-  return (
-    status === 401 &&
-    Boolean(body) &&
-    typeof body === "object" &&
-    (body as { errcode?: unknown }).errcode === "M_UNKNOWN_TOKEN"
-  );
-}
-
-/**
- * Revokes the Matrix access token without sending a request body. Failed
- * responses retain their complete redacted status and body as the cause of a
- * stable revocation error so the UI can surface the actual backend failure.
- */
-export async function revokeMatrixSession(
+/** Revoke the native OAuth grant, including when its access token has expired. */
+export async function revokeOidcSession(
   target: SessionRevocationTarget,
   fetchImpl: typeof fetch = fetch,
   externalSignal?: AbortSignal,
 ): Promise<void> {
-  if (!isSessionToken(target.accessToken)) {
+  if (
+    !isSessionToken(target.accessToken) ||
+    (target.refreshToken !== undefined && !isSessionToken(target.refreshToken))
+  ) {
     throw new SessionRevocationError("failed");
   }
 
-  const endpoint = logoutEndpoint(target.homeserver);
+  if (!isSessionToken(target.oidcClientId)) {
+    throw new SessionRevocationError("failed", {
+      cause: new Error(`The original OAuth client ID is unavailable. Open ${runtimeOidcIssuer()} and end this session in account settings; its cleanup record has been retained.`),
+    });
+  }
+  const clientId = target.oidcClientId;
+  assertRevocationHomeserver(target.homeserver);
   const controller = new AbortController();
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -180,48 +183,36 @@ export async function revokeMatrixSession(
   };
   if (externalSignal?.aborted) abortFromCaller();
   else externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  const request = Promise.resolve().then(() =>
-    fetchImpl(endpoint, {
+  const request = Promise.resolve().then(async () => {
+    controller.signal.throwIfAborted();
+    const metadata = await discoverOidcIssuer(getRuntimeSettings().homeserver, controller.signal);
+    controller.signal.throwIfAborted();
+    if (metadata.issuer !== runtimeOidcIssuer()) {
+      throw new Error("OIDC issuer does not match the configured environment");
+    }
+    const endpoint = assertRuntimeOidcEndpoint(metadata.revocation_endpoint, "OIDC revocation endpoint");
+    const body = new URLSearchParams({
+      token: target.refreshToken ?? target.accessToken,
+      token_type_hint: target.refreshToken ? "refresh_token" : "access_token",
+      client_id: clientId,
+    });
+    const response = await fetchImpl(endpoint, {
       method: "POST",
-      headers: { Authorization: `Bearer ${target.accessToken}` },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
       credentials: "omit",
       redirect: "manual",
       signal: controller.signal,
-    }),
-  );
-  try {
-    const response = await Promise.race([request, timeout, externalAbort]);
-    if (response.redirected || response.url !== endpoint) {
-      const failure = new SessionRevocationError("failed", {
+    });
+    if (response.redirected || response.url !== endpoint || response.status !== 200) {
+      throw new SessionRevocationError("failed", {
         cause: await readResponseFailure(response),
       });
-      throw failure;
-    }
-    if (response.status === 401) {
-      const body = await readResponseBody(response);
-      if (!body.ok) {
-        throw new SessionRevocationError("failed", { cause: body.error });
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body.text) as unknown;
-      } catch {
-        parsed = undefined;
-      }
-      if (!isUnknownAccessTokenResponse(response.status, parsed)) {
-        throw new SessionRevocationError("failed", {
-          cause: responseFailureFromText(response, body.text),
-        });
-      }
-      return;
-    }
-    if (response.status !== 200 && response.status !== 204) {
-      const failure = new SessionRevocationError("failed", {
-        cause: await readResponseFailure(response),
-      });
-      throw failure;
     }
     cancelResponseBody(response);
+  });
+  try {
+    await Promise.race([request, timeout, externalAbort]);
   } catch (error) {
     if (error instanceof SessionRevocationError) throw error;
     throw new SessionRevocationError(timedOut ? "timed-out" : "failed", {

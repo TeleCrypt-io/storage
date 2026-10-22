@@ -17,6 +17,7 @@ import {
   loadOidcLoginIntent,
   savePendingRevocation,
   saveSessionIfCurrent,
+  sameSessionIdentity,
   isSessionToken,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
@@ -239,17 +240,21 @@ export function StorageProvider({ children }: { children: ReactNode }) {
                 if (!accessTokenIsSafe || !refreshTokenIsSafe) {
                   throw new Error("OIDC token response is invalid");
                 }
-                if (gen !== connectGenRef.current) {
-                  throw new Error("Session is no longer active");
-                }
                 const previousSession = currentSession;
                 const nextSession = {
                   ...currentSession,
                   accessToken: tokens.accessToken,
                   refreshToken: tokens.refreshToken ?? currentSession.refreshToken,
                 };
-                if (!saveSessionIfCurrent(nextSession, previousSession)) {
-                  throw new Error("Session is no longer active");
+                try {
+                  if (gen !== connectGenRef.current || !saveSessionIfCurrent(nextSession, previousSession)) {
+                    throw new Error("Session is no longer active");
+                  }
+                } catch (error) {
+                  // A refresh may finish after logout has stopped this client. Keep
+                  // its newly issued grant recoverable if independent revocation fails.
+                  const cleanupError = await revokeOrRemember(nextSession, undefined, error);
+                  throw cleanupError ?? error;
                 }
                 currentSession = nextSession;
                 if (gen === connectGenRef.current) {
@@ -624,6 +629,10 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           // Never inspect or revoke that newer session as if it were a rotated token from logout.
           if (generation !== connectGenRef.current) return;
           const latest = loadSession();
+          if (latest && !sameSessionIdentity(latest, target)) {
+            resetConnection(false);
+            return;
+          }
           if (
             !latest ||
             (latest.accessToken === current.accessToken && latest.refreshToken === current.refreshToken)

@@ -23,10 +23,10 @@ vi.mock("./core", async () => {
 
 vi.mock("./revokeSession", async () => {
   const session = await vi.importActual<typeof import("./session")>("./session");
-  const revokeMatrixSession = vi.fn();
+  const revokeOidcSession = vi.fn();
   const revokeOrRemember = vi.fn(async (target: { homeserver: string; accessToken: string }, signal?: AbortSignal, primary?: unknown) => {
     try {
-      await revokeMatrixSession(target, undefined, signal);
+      await revokeOidcSession(target, undefined, signal);
       session.clearPendingRevocation(target);
       return null;
     } catch (error) {
@@ -41,7 +41,7 @@ vi.mock("./revokeSession", async () => {
       );
     }
   });
-  return { revokeMatrixSession, revokeOrRemember };
+  return { revokeOidcSession, revokeOrRemember };
 });
 
 const METADATA = {
@@ -73,7 +73,7 @@ beforeEach(() => {
   );
   vi.mocked(core.completeAuthorizationCodeFlow).mockReset();
   vi.mocked(core.whoAmI).mockReset();
-  vi.mocked(revocation.revokeMatrixSession).mockResolvedValue(undefined);
+  vi.mocked(revocation.revokeOidcSession).mockResolvedValue(undefined);
   const tabStorage = memoryStorage();
   const persistentStorage = memoryStorage();
   persistentStorage.setItem(
@@ -182,7 +182,7 @@ describe("beginOidcLogin stable device id", () => {
 
     await beginOidcLogin();
 
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith(
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith(
       expect.objectContaining({
         homeserver: getRuntimeSettings().homeserver,
         accessToken: "old-access",
@@ -240,9 +240,11 @@ describe("beginOidcLogin stable device id", () => {
     );
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
     expect(core.whoAmI).not.toHaveBeenCalled();
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "access",
+      refreshToken: "refresh",
+      oidcClientId: "client-123",
     }, undefined, undefined);
   });
 
@@ -276,7 +278,7 @@ describe("beginOidcLogin stable device id", () => {
     callback("?error=access_denied&state=two");
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in was cancelled");
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "old-access",
     }, undefined, undefined);
@@ -411,7 +413,7 @@ describe("beginOidcLogin stable device id", () => {
         "Browser session storage is unavailable",
       );
       expect(core.completeAuthorizationCodeFlow).not.toHaveBeenCalled();
-      expect(revocation.revokeMatrixSession).not.toHaveBeenCalled();
+      expect(revocation.revokeOidcSession).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, "sessionStorage", {
         configurable: true,
@@ -442,8 +444,8 @@ describe("beginOidcLogin stable device id", () => {
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Session persistence failed");
     expect(core.completeAuthorizationCodeFlow).toHaveBeenCalledOnce();
     expect(core.whoAmI).not.toHaveBeenCalled();
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith(
-      { homeserver: getRuntimeSettings().homeserver, accessToken: "issued-access" },
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith(
+      { homeserver: getRuntimeSettings().homeserver, accessToken: "issued-access", refreshToken: "issued-refresh", oidcClientId: "client-123" },
       undefined,
       undefined,
     );
@@ -463,9 +465,11 @@ describe("beginOidcLogin stable device id", () => {
     vi.mocked(core.whoAmI).mockRejectedValue(new Error("whoami failed"));
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in failed");
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      refreshToken: "new-refresh",
+      oidcClientId: "client-123",
     }, undefined, undefined);
   });
 
@@ -485,9 +489,11 @@ describe("beginOidcLogin stable device id", () => {
     await expect(completeOidcLoginFromCallback()).rejects.toThrow(
       "OIDC device identity could not be verified",
     );
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      refreshToken: "new-refresh",
+      oidcClientId: "client-123",
     }, undefined, undefined);
   });
 
@@ -507,9 +513,11 @@ describe("beginOidcLogin stable device id", () => {
     await expect(completeOidcLoginFromCallback()).rejects.toThrow(
       "OIDC Matrix identity could not be verified",
     );
-    expect(revocation.revokeMatrixSession).toHaveBeenCalledWith({
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      refreshToken: "new-refresh",
+      oidcClientId: "client-123",
     }, undefined, undefined);
   });
 
@@ -526,7 +534,7 @@ describe("beginOidcLogin stable device id", () => {
     } as never);
     vi.mocked(core.whoAmI).mockRejectedValue(new Error("whoami failed"));
     const revocationError = new Error("network secret");
-    vi.mocked(revocation.revokeMatrixSession).mockRejectedValueOnce(revocationError);
+    vi.mocked(revocation.revokeOidcSession).mockRejectedValueOnce(revocationError);
 
     let caught: unknown;
     try {
@@ -586,7 +594,7 @@ describe("beginOidcLogin stable device id", () => {
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in callback was malformed");
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).toContain("live-access");
-    expect(revocation.revokeMatrixSession).not.toHaveBeenCalled();
+    expect(revocation.revokeOidcSession).not.toHaveBeenCalled();
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
   });
 
@@ -602,7 +610,7 @@ describe("beginOidcLogin stable device id", () => {
         oidcClientId: "client-123",
       }),
     );
-    vi.mocked(revocation.revokeMatrixSession).mockImplementationOnce(async () => {
+    vi.mocked(revocation.revokeOidcSession).mockImplementationOnce(async () => {
       sessionStorage.setItem(
         "telecrypt-io-ui:session",
         JSON.stringify({
@@ -617,17 +625,34 @@ describe("beginOidcLogin stable device id", () => {
     });
 
     await beginOidcLogin();
-    expect(revocation.revokeMatrixSession).toHaveBeenNthCalledWith(
+    expect(revocation.revokeOidcSession).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ accessToken: "old-access" }),
       undefined,
       undefined,
     );
-    expect(revocation.revokeMatrixSession).toHaveBeenNthCalledWith(
+    expect(revocation.revokeOidcSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ accessToken: "rotated-access" }),
       undefined,
       undefined,
     );
   });
+  it("preserves an unrelated login that replaces the session during revocation", async () => {
+    const existing = {
+      homeserver: getRuntimeSettings().homeserver,
+      userId: "@alice:localhost:8008", deviceId: "DEVICE1", accessToken: "old-access",
+      refreshToken: "old-refresh", oidcClientId: "client-123",
+    };
+    const replacement = { ...existing, userId: "@bob:localhost:8008", deviceId: "OTHERDEVICE", accessToken: "new-access", refreshToken: "new-refresh" };
+    sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(existing));
+    vi.mocked(revocation.revokeOidcSession).mockImplementationOnce(async () => {
+      sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(replacement));
+    });
+    await expect(beginOidcLogin()).rejects.toThrow("Session changed during sign-in");
+    expect(revocation.revokeOidcSession).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(sessionStorage.getItem("telecrypt-io-ui:session")!)).toEqual(replacement);
+    expect(core.beginAuthorizationCodeFlow).not.toHaveBeenCalled();
+  });
+
 });
