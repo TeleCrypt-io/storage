@@ -153,7 +153,7 @@ export async function revokeOidcSession(
 
   if (!isSessionToken(target.oidcClientId)) {
     throw new SessionRevocationError("failed", {
-      cause: new Error(`The original OAuth client ID is unavailable. Open ${runtimeOidcIssuer()} and end this session in account settings; its cleanup record has been retained.`),
+      cause: new Error(`The original OAuth client ID is unavailable. Open ${runtimeOidcIssuer()} and end this session in account settings. Then close this tab and open Storage in a new tab.`),
     });
   }
   const clientId = target.oidcClientId;
