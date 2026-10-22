@@ -9,7 +9,7 @@ This package is maintained in the [`storage`](https://github.com/TeleCrypt-io/st
 repository under `cli/`. It has an independent lockfile and release workflow so CLI checks and
 release archives remain isolated from the Web package at the repository root.
 
-The CLI runs on Linux and requires Node.js `>=24.20.0`; release tooling verifies that exact Node.js
+The CLI runs on Linux and requires Node.js `>=24.21.0`; release tooling verifies that exact Node.js
 version and the bundled npm `11.19.0`.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the

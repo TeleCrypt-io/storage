@@ -6,6 +6,9 @@ client and its user guide live in [`cli/`](./cli/).
 
 See [`LICENSE`](./LICENSE) for licensing.
 
+Storage Web development supports Node.js `>=24.21.0`; release tooling pins Node.js `24.21.0` and
+the bundled npm `11.19.0`.
+
 The `Deploy Storage Web` workflow publishes Storage to UpCloud Object Storage.
 Pushes to `stage` build and publish that exact commit. Manual dispatches run from `main`; Stage
 defaults to the current `stage` head, while Production requires a `storage-web-vX.Y.Z` release tag.
