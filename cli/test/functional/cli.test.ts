@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   cleanupFreshProfiles,
   cliJson,
@@ -376,6 +377,114 @@ describe("CLI", () => {
       expect(viewer?.membership).toBe("join");
     },
     120000,
+  );
+
+  it(
+    "cleans up a partial upload from its emitted IDs and permits retrying cleanup",
+    async () => {
+      const dir = freshProfileDir("partial-upload");
+      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+      await registerProfile(dir, "partial-upload");
+      const vault = await cliJson(["storage", "vault", "create", "Upload recovery"], env);
+      expect(vault.code).toBe(0);
+      const vaultId = vault.json.id as string;
+      const source = artifactPath("partial-upload.txt");
+      fs.writeFileSync(source, "partial upload to remove");
+      const outageModule = fileURLToPath(new URL("../harness/uploadOutage.mjs", import.meta.url));
+      const upload = await cliJson(["storage", "file", "upload", vaultId, source], {
+        ...env,
+        NODE_OPTIONS: `--import=${outageModule}`,
+      });
+      expect(upload.code).not.toBe(0);
+      expect(upload.json).toMatchObject({
+        code: "MUTATION_PARTIAL",
+        completedIds: [expect.stringMatching(/^mxc:\/\//u), expect.stringMatching(/^\$/u)],
+      });
+      const [mediaId, fileId] = upload.json.completedIds as string[];
+      expect(upload.json.error).toContain(`cleanup-upload '${vaultId}' '${mediaId}' '${fileId}'`);
+      const listed = await cliJson(["storage", "file", "list", vaultId], env);
+      expect(listed.code).toBe(0);
+      expect(listed.json.files).toEqual([]);
+
+      const args = ["storage", "file", "cleanup-upload", vaultId, mediaId, fileId];
+      const cleanup = await cliJson(args, env);
+      expect(cleanup.code).toBe(0);
+      expect(cleanup.json).toMatchObject({ cleanedUp: true, treeId: vaultId, mediaId, fileId });
+      const retry = await cliJson(args, env);
+      expect(retry.code).toBe(0);
+      const session = JSON.parse(fs.readFileSync(sessionPath(dir), "utf8")) as Session;
+      const [serverName, mediaKey] = mediaId.slice("mxc://".length).split("/");
+      const download = await fetch(`${HOMESERVER}/_matrix/client/v1/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaKey)}`, {
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+      });
+      expect(download.status).toBe(404);
+    },
+    180000,
+  );
+
+  it(
+    "backs up metadata, recovers a committed creation after an outage, and restores names on a fresh login",
+    async () => {
+      const originalDir = freshProfileDir("metadata-backup");
+      const env = { TELECRYPT_IO_STORAGE_HOME: originalDir };
+      const user = await registerProfile(originalDir, "metadata-backup");
+      const outageModule = fileURLToPath(new URL("../harness/backupOutage.mjs", import.meta.url));
+
+      const failed = await cliJson(["storage", "vault", "create", "Metadata vault"], {
+        ...env,
+        NODE_OPTIONS: `--import=${outageModule}`,
+      });
+      expect(failed.code).not.toBe(0);
+      expect(failed.json).toMatchObject({ code: "MUTATION_PARTIAL", completedIds: [expect.any(String)] });
+      const vaultId = (failed.json.completedIds as string[])[0];
+      expect(failed.json.error).toContain(vaultId);
+      expect(failed.json.error).toContain("key-safe setup");
+      const session = JSON.parse(fs.readFileSync(sessionPath(originalDir), "utf8")) as Session;
+      const backup = async () => {
+        const response = await fetch(`${HOMESERVER}/_matrix/client/v3/room_keys/version`, {
+          headers: { Authorization: `Bearer ${session.accessToken}` },
+        });
+        expect(response.status).toBe(200);
+        return await response.json() as { count: number };
+      };
+      expect((await backup()).count).toBe(0);
+
+      const retry = await cliJson(["storage", "key-safe", "setup"], env);
+      expect(retry.code).toBe(0);
+      expect(retry.json).toMatchObject({ state: "ready", alreadyReady: true });
+      expect((await backup()).count).toBeGreaterThan(0);
+      const folder = await cliJson(["storage", "vault", "subfolder", "create", vaultId, "Metadata folder"], env);
+      expect(folder.code).toBe(0);
+      const folderId = folder.json.id as string;
+      const renameEnv = {
+        ...env,
+        NODE_OPTIONS: `--import=${fileURLToPath(new URL("../harness/settledBackup.mjs", import.meta.url))}`,
+      };
+      const renamedVault = await cliJson(["storage", "vault", "rename", vaultId, "Restored vault name"], renameEnv);
+      expect(renamedVault.code).toBe(0);
+      const renamedFolder = await cliJson(["storage", "vault", "subfolder", "rename", folderId, "Restored folder name"], renameEnv);
+      expect(renamedFolder.code).toBe(0);
+
+      const logout = await cliJson(["storage", "logout"], env);
+      expect(logout.code).toBe(0);
+      const restoredDir = freshProfileDir("metadata-restore");
+      const restoredEnv = { TELECRYPT_IO_STORAGE_HOME: restoredDir };
+      markProfileForRemoteCleanup(restoredDir);
+      await loginProfile(restoredDir, user);
+      const restored = await cliJson(["storage", "key-safe", "restore", "--key-stdin"], restoredEnv, {
+        stdin: user.recoveryKey,
+      });
+      expect(restored.code).toBe(0);
+      const vaults = await cliJson(["storage", "vault", "list"], restoredEnv);
+      expect(vaults.json.vaults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: vaultId, name: "Restored vault name" }),
+      ]));
+      const folders = await cliJson(["storage", "vault", "subfolder", "list", vaultId], restoredEnv);
+      expect(folders.json.folders).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: folderId, name: "Restored folder name" }),
+      ]));
+    },
+    240000,
   );
 
   it(

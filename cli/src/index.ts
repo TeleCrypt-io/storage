@@ -73,6 +73,32 @@ function withCoreDeadline<T>(
   return opened.run(operation, label);
 }
 
+async function withBackedUpMutation<T extends { id: string }>(
+  opened: OpenedStorage,
+  operation: (signal: AbortSignal) => Promise<T>,
+  label: string,
+  fileTreeId?: string,
+): Promise<T> {
+  const result = await opened.run(operation, label, undefined,
+    label === "file upload" ? { settleAfterCancellation: true } : undefined);
+  try {
+    await opened.run(
+      (signal) => opened.storage.waitForKeyBackup(fileTreeId ?? result.id, fileTreeId ? result.id : undefined, { signal }),
+      "key backup settlement",
+      25_000,
+    );
+  } catch (error) {
+    throw new core.MutationPartialError(
+      label,
+      [result.id],
+      `the mutation committed (${result.id}), but key backup did not finish. Keep this profile and run ` +
+      "`telecrypt-io storage key-safe setup` to retry backup; do not repeat the mutation.",
+      { cause: error },
+    );
+  }
+  return result;
+}
+
 function openProfileStorage(signal: AbortSignal): Promise<OpenedStorage> {
   return openStorage(undefined, signal, false);
 }
@@ -237,7 +263,7 @@ storage
   .action(async (opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       const session = await loginAndInitialize(opts.homeserver, opts.serverName, {
-        openBrowser: !opts.browser,
+        openBrowser: opts.browser,
         onVerification: ({ verificationUri, verificationUriComplete, userCode }) => {
           // Progress output — stderr only, so it never corrupts the stdout
           // contract (--json's single JSON line / text mode's single line).
@@ -361,6 +387,11 @@ keySafe
         }
 
         if (status.state === "ready") {
+          await opened.run(
+            (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
+            "key backup settlement",
+            25_000,
+          );
           return {
             json: { state: "ready", alreadyReady: true },
             text: "The Decryption Key Safe is already ready on this client login.",
@@ -509,7 +540,7 @@ vault
   .action(async (name: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.createVault(opened.storage, name, { signal: operationSignal }), "vault creation");
+        const result = await withBackedUpMutation(opened, (operationSignal) => core.createVault(opened.storage, name, { signal: operationSignal }), "vault creation");
         return {
           json: { ...result },
           text: `Created vault "${safeOutputField(result.name)}" (${safeOutputField(result.id)})`,
@@ -550,7 +581,7 @@ subfolder
   .action(async (parentId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(
+        const result = await withBackedUpMutation(
           opened,
           (operationSignal) => core.createSubfolder(opened.storage, parentId, name, { signal: operationSignal }),
           "folder creation",
@@ -591,7 +622,7 @@ subfolder
   .action(async (folderId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.renameFolder(opened.storage, folderId, name, { signal: operationSignal }), "folder rename");
+        const result = await withBackedUpMutation(opened, (operationSignal) => core.renameFolder(opened.storage, folderId, name, { signal: operationSignal }), "folder rename");
         return { json: { ...result }, text: `Renamed folder ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });
@@ -675,7 +706,7 @@ vault
   .action(async (vaultId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.renameVault(opened.storage, vaultId, name, { signal: operationSignal }), "vault rename");
+        const result = await withBackedUpMutation(opened, (operationSignal) => core.renameVault(opened.storage, vaultId, name, { signal: operationSignal }), "vault rename");
         return { json: { ...result }, text: `Renamed vault ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });
@@ -707,9 +738,9 @@ file
     await runAction(command, async (signal): Promise<CommandResult> => {
       const data = readBoundedInput(filePath);
       return withProfileStorage(signal, async (opened) => {
-        markBackupWorkPending(opened.storage);
         const name = opts.name ?? path.basename(filePath);
-        const result = await opened.run(
+        const result = await withBackedUpMutation(
+          opened,
           (operationSignal) => core.uploadFile(
             opened.storage,
             treeId,
@@ -719,18 +750,29 @@ file
             { signal: operationSignal },
           ),
           "file upload",
-        );
-        // If recovery/backup is already active for this account, give the
-        // new session's key a chance to actually reach the server backup
-        // before this short-lived process exits.
-        await opened.run(
-          (operationSignal) => waitForBackupSettled(opened.storage, undefined, operationSignal),
-          "key backup settlement",
-          25_000,
+          treeId,
         );
         return {
           json: { ...result },
           text: `Uploaded "${safeOutputField(result.name)}" as ${safeOutputField(result.id)}`,
+        };
+      });
+    });
+  });
+
+file
+  .command("cleanup-upload <treeId> <mediaId> [fileId]")
+  .description("Clean up the acknowledged media and event from a partially completed upload")
+  .action(async (treeId: string, mediaId: string, fileId: string | undefined, _opts, command: Command) => {
+    await runAction(command, async (signal): Promise<CommandResult> => {
+      return withProfileStorage(signal, async (opened) => {
+        await opened.run(
+          (operationSignal) => core.cleanupFileUpload(opened.storage, treeId, mediaId, fileId, { signal: operationSignal }),
+          "partial upload cleanup",
+        );
+        return {
+          json: { cleanedUp: true, treeId, mediaId, ...(fileId ? { fileId } : {}) },
+          text: `Cleaned up partial upload ${safeOutputField(mediaId)}`,
         };
       });
     });
@@ -782,7 +824,7 @@ file
   .action(async (treeId: string, fileId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.renameFile(opened.storage, treeId, fileId, name, { signal: operationSignal }), "file rename");
+        const result = await withBackedUpMutation(opened, (operationSignal) => core.renameFile(opened.storage, treeId, fileId, name, { signal: operationSignal }), "file rename", treeId);
         return { json: { ...result }, text: `Renamed file ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });

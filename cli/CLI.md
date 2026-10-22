@@ -45,7 +45,8 @@ TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-bob"   telecrypt-io stora
 
 Every command accepts `--json` (anywhere on the command line): machine-readable output on
 stdout on success, or a final `{"error": "..."}` line on stderr with a non-zero exit code on
-failure. Without `--json`, commands print human-readable text instead. SDK and command-parser
+failure. A partially completed mutation also includes `code: "MUTATION_PARTIAL"` and
+`completedIds` so scripts can reconcile the acknowledged work. Without `--json`, commands print human-readable text instead. SDK and command-parser
 diagnostic logs are also preserved on stderr, including nonempty warnings from successful internal
 checks, and may accompany the final error line; they never corrupt successful machine-readable
 stdout. Failure diagnostics retain complete secret-safe exception names, messages, causes,
@@ -86,6 +87,11 @@ file and refuses to overwrite an existing path. In non-interactive use, run `con
 after preserving the key outside the profile. Setup can be resumed in another process and returns
 the same pending key until confirmation.
 
+Creating or renaming vaults, folders, and files waits for their encryption keys to reach
+the server backup before reporting success. If the mutation commits but backup fails,
+the error includes the committed ID. Keep the profile and rerun `key-safe setup` to
+finish the pending backup without repeating the mutation.
+
 Keep the Recovery Key somewhere separate from the computer and profile. If both the Recovery Key
 and access to every signed-in client login are lost, files may become permanently unreadable; a
 password reset cannot recover them. On a new client login for an account with an existing Safe, run
@@ -115,6 +121,7 @@ files. The `subfolder` commands manage nested directory nodes within a vault.
 
 ```sh
 telecrypt-io storage file upload <treeId> <path> [--name <name>]
+telecrypt-io storage file cleanup-upload <treeId> <mediaId> [fileId]
 telecrypt-io storage file list <treeId>
 telecrypt-io storage file download <treeId> <fileId> <destPath>
 telecrypt-io storage file rename <treeId> <fileId> <name>
@@ -127,6 +134,11 @@ nonempty trees, including child folders; remove empty child folders explicitly f
 File uploads are limited to 128 MiB. Downloads use an atomic temporary file and refuse to replace an
 existing destination. Download bytes are held in memory and kept inside the command's 120-second
 cancellation boundary before installation.
+
+If an upload only partially completes, its error retains acknowledged media/event IDs
+and prints the cleanup command. Reconcile or clean up that upload before uploading again.
+Cleanup can be retried if interrupted; it uses the same SDK ownership and attachment checks
+as ordinary file operations.
 
 ## Example: two participants sharing a vault
 

@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { sanitizeDiagnosticText } from "@telecrypt-io/storage/core";
+import { MutationPartialError, sanitizeDiagnosticText } from "@telecrypt-io/storage/core";
 import { cancellationExitCode, commandSignal } from "./cancellation.js";
 
 
@@ -52,6 +52,7 @@ function rawErrorMessage(error: unknown): string {
     const value = details[key];
     if (typeof value === "string" || typeof value === "number") parts.push(`${key}: ${value}`);
   }
+  if (error instanceof MutationPartialError) parts.push(`completedIds: ${error.completedIds.join(", ")}`);
   if (error.cause !== undefined) parts.push(`cause: ${rawErrorMessage(error.cause)}`);
   if (error instanceof AggregateError) {
     error.errors.forEach((child, index) => {
@@ -67,6 +68,24 @@ export function safeErrorMessage(error: unknown): string {
   const rawMessage = rawErrorMessage(error);
   const message = rawMessage.replace(/\\(["'])/gu, "$1");
   return sanitizeDiagnosticText(message);
+}
+
+function uploadCleanupCommand(error: MutationPartialError): string | undefined {
+  const treeId = error.treeId;
+  if (error.operation !== "file upload" || !treeId || !error.completedIds[0]?.startsWith("mxc://")) return undefined;
+  const args = [treeId, ...error.completedIds].map((arg) => `'${arg.replaceAll("'", "'\\''")}'`);
+  return `telecrypt-io storage file cleanup-upload ${args.join(" ")}`;
+}
+
+function partialMutation(error: unknown): MutationPartialError | undefined {
+  if (error instanceof MutationPartialError) return error;
+  if (error instanceof AggregateError) {
+    for (const child of error.errors) {
+      const partial = partialMutation(child);
+      if (partial) return partial;
+    }
+  }
+  return error instanceof Error ? partialMutation(error.cause) : undefined;
 }
 
 /**
@@ -90,8 +109,15 @@ export async function runAction(
     await writeLine(process.stdout, rendered);
     process.exitCode = cancellationExitCode() ?? 0;
   } catch (err) {
-    const message = safeErrorMessage(err);
-    await writeLine(process.stderr, json ? JSON.stringify({ error: message }) : `Error: ${message}`);
+    const mutation = partialMutation(err);
+    const cleanupCommand = mutation ? uploadCleanupCommand(mutation) : undefined;
+    const message = sanitizeDiagnosticText(safeErrorMessage(err) + (cleanupCommand
+      ? `; do not repeat the upload before reconciling it. Clean up the partial upload with: ${cleanupCommand}`
+      : ""));
+    const partial = mutation
+      ? { code: mutation.code, completedIds: mutation.completedIds, ...(mutation.treeId ? { treeId: mutation.treeId } : {}) }
+      : {};
+    await writeLine(process.stderr, json ? JSON.stringify({ error: message, ...partial }) : `Error: ${message}`);
     process.exitCode = cancellationExitCode() ?? 1;
   }
 }
