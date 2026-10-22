@@ -18,6 +18,9 @@ import { commandSignal, settlePromiseWithin } from "./cancellation.js";
 
 const CRYPTO_SNAPSHOT_TIMEOUT_MS = 30_000;
 const STORAGE_OPEN_TIMEOUT_MS = 30_000;
+// Uploads retain acknowledged IDs while an in-flight native request settles.
+// The SDK's native Matrix HTTP requests have a 30-second timeout.
+const UPLOAD_CANCELLATION_SETTLE_TIMEOUT_MS = 30_000;
 export const STORAGE_OPERATION_TIMEOUT_MS = 120_000;
 
 export interface OpenedStorage {
@@ -25,11 +28,13 @@ export interface OpenedStorage {
   session: Session;
   /** Runs one SDK operation with a combined cancellation/deadline signal.
    * Cancellation cleanup is joined for a bounded period before the command may
-   * snapshot or unlock; cancellation or deadline failure reaches the caller. */
+   * snapshot or unlock. Uploads opt into bounded settlement after cancellation
+   * so the caller receives any acknowledged IDs from the SDK. */
   run: <T>(
     operation: (signal: AbortSignal) => Promise<T>,
     label: string,
     timeoutMs?: number,
+    options?: { settleAfterCancellation?: boolean },
   ) => Promise<T>;
   /** Persists the crypto store back to disk and stops the client. Call this
    * in a `finally` block around every command that opens storage, so the
@@ -115,6 +120,7 @@ async function boundedStorageOperation<T>(
   signal: AbortSignal,
   timeoutMessage: string,
   cancelOperation?: () => void | Promise<void>,
+  settleAfterCancellation = false,
 ): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new StorageError("storage operation timeout must be positive");
@@ -125,20 +131,18 @@ async function boundedStorageOperation<T>(
   let boundaryError: StorageError | undefined;
   let boundaryFailure: unknown;
   let boundaryJoin: Promise<void> | undefined;
+  let operationPromise: Promise<T>;
   let rejectBoundary!: (error: unknown) => void;
   const boundary = new Promise<never>((_, reject) => {
     rejectBoundary = reject;
   });
-  const stop = (error: StorageError) => {
-    if (boundaryError) return;
-    boundaryError = error;
-    controller.abort(error);
+  const cancelAtBoundary = (error: StorageError): Promise<void> => {
     try {
       const cleanup = cancelOperation?.();
       const cleanupPromise = Promise.resolve(cleanup);
       // Cancellation hooks are bounded so the operation boundary does not wait
       // forever for cleanup.
-      boundaryJoin = settlePromiseWithin(cleanupPromise).then((settlement) => {
+      return settlePromiseWithin(cleanupPromise).then((settlement) => {
         if (settlement.status === "rejected") {
           boundaryFailure = new AggregateError(
             [error, settlement.error],
@@ -160,13 +164,31 @@ async function boundedStorageOperation<T>(
         [error, cleanupError],
         `${error.message}; storage cleanup failed`,
       );
-      boundaryJoin = Promise.resolve();
       rejectBoundary(boundaryFailure);
+      return Promise.resolve();
+    }
+  };
+  const stop = (error: StorageError) => {
+    if (boundaryError) return;
+    boundaryError = error;
+    controller.abort(error);
+    if (settleAfterCancellation) {
+      // The SDK upload stops before its next write and reports IDs from an
+      // already accepted request. Keep the client alive until that receipt is
+      // available instead of replacing it with the outer cancellation error.
+      boundaryJoin = settlePromiseWithin(operationPromise, UPLOAD_CANCELLATION_SETTLE_TIMEOUT_MS)
+        .then((settlement) => {
+          if (settlement.status === "timeout") return cancelAtBoundary(error);
+          boundaryFailure = settlement.status === "rejected" ? settlement.error : error;
+          rejectBoundary(boundaryFailure);
+        });
+    } else {
+      boundaryJoin = cancelAtBoundary(error);
     }
   };
   const onAbort = () => stop(new StorageError("operation cancelled"));
   signal.addEventListener("abort", onAbort, { once: true });
-  const operationPromise = Promise.resolve().then(() => {
+  operationPromise = Promise.resolve().then(() => {
     if (controller.signal.aborted || signal.aborted) {
       throw boundaryError ?? new StorageError("operation cancelled");
     }
@@ -175,7 +197,7 @@ async function boundedStorageOperation<T>(
   timer = setTimeout(() => stop(new StorageError(timeoutMessage)), timeoutMs);
   try {
     const result = await Promise.race([operationPromise, boundary]);
-    if (boundaryError) throw boundaryError;
+    if (boundaryError && !settleAfterCancellation) throw boundaryError;
     return result;
   } catch (error) {
     if (boundaryError) {
@@ -305,9 +327,11 @@ function createOpenedStorage(
   let closed = false;
   let snapshotSafe = true;
   let activeOperation: Promise<unknown> | undefined;
+  let settlingAfterCancellation = false;
   let abortCleanupFailure: unknown;
   let abortCleanupFailed = false;
   const onAbort = () => {
+    if (settlingAfterCancellation) return;
     // Most core operations use the Matrix client directly and therefore do not
     // have a per-operation options object. Stopping the client is the SDK's
     // supported cancellation boundary for those in-flight requests; close()
@@ -329,10 +353,12 @@ function createOpenedStorage(
     operation: (operationSignal: AbortSignal) => Promise<T>,
     label: string,
     timeoutMs = STORAGE_OPERATION_TIMEOUT_MS,
+    options?: { settleAfterCancellation?: boolean },
   ): Promise<T> => {
     if (closed) throw new StorageError("storage command is closing; retry the operation");
     if (activeOperation) throw new StorageError("another storage operation is already active");
-    const running = withStorageDeadline(
+    settlingAfterCancellation = options?.settleAfterCancellation === true;
+    const running = boundedStorageOperation(
       operation,
       timeoutMs,
       signal,
@@ -341,12 +367,16 @@ function createOpenedStorage(
         snapshotSafe = false;
         storage.getClient().stopClient();
       },
+      settlingAfterCancellation,
     );
     activeOperation = running;
     try {
       return await running;
     } finally {
-      if (activeOperation === running) activeOperation = undefined;
+      if (activeOperation === running) {
+        activeOperation = undefined;
+        settlingAfterCancellation = false;
+      }
     }
   };
 
@@ -461,7 +491,7 @@ export async function openStorage(
  * process*: the backup engine deliberately fire-and-forgets its upload loop
  * with a randomised 0-10s startup jitter (to avoid a multi-device thundering
  * herd), so a command that creates a new megolm session (Safe setup,
- * or a file upload once recovery is already set up) and then exits
+ * metadata, or a file upload once recovery is already set up) and then exits
  * immediately can easily outrun that loop, leaving the new key silently
  * absent from the backup — recoverable-looking but not actually recoverable.
  * A timeout is an error: the command must not report success while a key may
