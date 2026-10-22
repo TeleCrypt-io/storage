@@ -215,12 +215,17 @@ describe("CLI diagnostics", () => {
 
   it.each([
     ["malformed", "upstream failure access_token=malformed-secret\nretry later"],
-    ["partial", "{\"error\":\"temporarily_unavailable\",\"access_token\":\"partial-secret\""],
+    ["partial", "{\"error\":\"temporarily_unavailable\",\"diagnostic\":\"partial-body-marker-safe\",\"access_token\":\"partial-secret\""],
   ] as const)("keeps %s SDK refresh response failures machine-readable", async (kind, text) => {
+    let partialChunkSent = false;
     const body = kind === "partial"
       ? new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode(text));
+          pull(controller) {
+            if (!partialChunkSent) {
+              partialChunkSent = true;
+              controller.enqueue(new TextEncoder().encode(text));
+              return;
+            }
             controller.error(new Error("provider stream closed"));
           },
         })
@@ -242,6 +247,9 @@ describe("CLI diagnostics", () => {
     expect(line).not.toContain(kind === "partial" ? "partial-secret" : "malformed-secret");
     expect(line).not.toMatch(/[\r\n\u0000-\u001f\u007f-\u009f\u2028\u2029]/u);
     expect((machineError as { error: string }).error).toContain("OIDC token refresh");
+    if (kind === "partial") {
+      expect((machineError as { error: string }).error).toContain("partial-body-marker-safe");
+    }
     expect(result.persist).not.toHaveBeenCalled();
   });
 });
