@@ -17,6 +17,9 @@ const EXPECTED_LOCAL_CONSOLE = [
   /^Applying inline style violates .* \(http:\/\/localhost:5173\/@vite\/client\)$/,
   /^Failed to load resource: net::ERR_SSL_PROTOCOL_ERROR \(https:\/\/localhost:8008\/\.well-known\/matrix\/client\)$/,
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/room_keys\/version\)$/,
+  // A newly created sending session is absent while Matrix uploads its backup.
+  // Successful writes now wait for this exact session to become available.
+  /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/room_keys\/keys\/[^/]+\/[^?]+\?version=\d+\)$/,
   // An empty Matrix account has no Safe, signing, or backup account-data yet;
   // these 404s are the documented "setup required" result during first use.
   /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \(http:\/\/localhost:8008\/_matrix\/client\/v3\/user\/%40[^/]+\/account_data\/(?:m\.secret_storage\.default_key|m\.secret_storage\.key\.[^/]+|m\.cross_signing\.(?:master|self_signing|user_signing)|m\.megolm_backup\.v1)\)$/,

@@ -9,9 +9,10 @@ for (const expired of [false, true]) {
   test(`logout revokes a real OAuth grant with ${expired ? "an expired" : "a valid"} access token`, async ({ page }) => {
     test.setTimeout(expired ? 420_000 : 90_000);
     const user = await registerE2eUser(expired ? "e2e_logout_expired" : "e2e_logout");
-    const issued = page.waitForResponse((response) => response.url() === `${HOMESERVER}/oauth2/token`);
+    const issued = page.waitForResponse((response) => response.url() === `${HOMESERVER}/oauth2/token`)
+      .then((response) => response.json() as Promise<{ expires_in: number }>);
     await loginViaUI(page, user, { deferKeySafe: true });
-    const tokenResponse = await (await issued).json() as { expires_in: number };
+    const tokenResponse = await issued;
     const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem("telecrypt-io-ui:session")!) as Session);
     const metadata = await (await fetch(`${HOMESERVER}/_matrix/client/v1/auth_metadata`)).json() as {
       token_endpoint: string;

@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures";
-import { registerE2eUser, waitForServerBackupCount } from "./testUsers";
+import { registerE2eUser } from "./testUsers";
 import { auditConsole, createVault, downloadFileBytes, loginViaUI, openVaultByName, uploadFile, confirmRecoveryKeySaved, restoreRecoveryKey } from "./uiHelpers";
 
 // Mirrors test/functional/keys.test.ts 5.3 ("a genuinely new device recovers
@@ -25,15 +25,9 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
   await openVaultByName(pageA, "RecoveryTest");
   await uploadFile(pageA, "important.txt", "text/plain", original);
 
-  // Server-side proof the backup engine actually finished uploading the
-  // file's room key, not just that the engine believes it's active — read
-  // the access token straight out of this tab's sessionStorage.
-  const accessToken = await pageA.evaluate(() => {
-    const raw = sessionStorage.getItem("telecrypt-io-ui:session");
-    return raw ? (JSON.parse(raw) as { accessToken: string }).accessToken : null;
-  });
-  expect(accessToken).toBeTruthy();
-  await waitForServerBackupCount(accessToken!, 1, 60_000);
+  // The product must settle backup before logout, without a test-only wait.
+  await pageA.getByTestId("logout").click();
+  await expect(pageA.getByTestId("oidc-login")).toBeVisible();
 
   // Device B: a genuinely fresh browser context (empty IndexedDB) logging
   // in through the same MAS/OIDC flow. That produces a brand-new Matrix
@@ -56,6 +50,14 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
   await openVaultByName(pageB, "RecoveryTest");
   const downloaded = await downloadFileBytes(pageB, "important.txt");
   expect(downloaded.equals(original)).toBe(true);
+  pageB.once("dialog", (dialog) => dialog.accept());
+  await pageB.getByTestId("file-item").getByTestId("delete-file").click();
+  await expect(pageB.getByTestId("file-item")).toHaveCount(0);
+  pageB.once("dialog", (dialog) => dialog.accept());
+  await pageB.locator('[data-testid="vault-item"]', { hasText: "RecoveryTest" }).getByTestId("delete-vault").click();
+  await expect(pageB.getByTestId("select-vault-prompt")).toBeVisible();
+  await pageB.getByTestId("logout").click();
+  await expect(pageB.getByTestId("oidc-login")).toBeVisible();
   consoleB.assertClean();
   consoleA.assertClean();
 });

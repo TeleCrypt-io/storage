@@ -33,7 +33,7 @@ import {
 } from "../lib/oidcCallback";
 import { revokeOrRemember } from "../lib/revokeSession";
 import { withAccountSignal } from "../lib/accountOperation";
-import { settleKeyBackupBeforeLogout, stopBackupTracking } from "../lib/keyBackup";
+import { settleKeyBackupBeforeLogout, startBackupTracking, stopBackupTracking } from "../lib/keyBackup";
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
 
@@ -311,6 +311,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           const accountAbortController = new AbortController();
           accountAbortRef.current = accountAbortController;
           setAccountSignal(accountAbortController.signal);
+          startBackupTracking(client);
           setStorage(client);
           sessionRef.current = currentSession;
           setSession(currentSession);

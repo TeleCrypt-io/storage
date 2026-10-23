@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TeleCryptIOStorage } from "@telecrypt-io/storage";
-import { backedUp, forgetDeletedBackup, settleKeyBackupBeforeLogout, stopBackupTracking } from "./keyBackup";
+import { backedUp, forgetDeletedBackup, settleKeyBackupBeforeLogout, startBackupTracking, stopBackupTracking } from "./keyBackup";
 
 const clients: TeleCryptIOStorage[] = [];
 function fixture(deviceId = "DEVICE") {
@@ -52,6 +52,10 @@ describe("browser write and logout backup settlement", () => {
     });
     stopBackupTracking(storage);
     const reloaded = fixture();
+    startBackupTracking(reloaded.storage);
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(true);
     reloaded.waitForKeyBackup.mockRejectedValueOnce(new Error("still unavailable"));
     await expect(settleKeyBackupBeforeLogout(reloaded.storage)).rejects.toThrow("Keep this tab open");
     await settleKeyBackupBeforeLogout(reloaded.storage);

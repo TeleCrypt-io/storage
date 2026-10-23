@@ -34,6 +34,10 @@ function state(storage: TeleCryptIOStorage): PendingBackup {
   return value;
 }
 
+export function startBackupTracking(storage: TeleCryptIOStorage): void {
+  state(storage);
+}
+
 function persist(value: PendingBackup) {
   if (value.targets.size) sessionStorage.setItem(value.key, JSON.stringify([...value.targets.values()]));
   else sessionStorage.removeItem(value.key);
