@@ -10,7 +10,7 @@ repository under `cli/`. It has an independent lockfile and release workflow so 
 release archives remain isolated from the Web package at the repository root.
 
 The CLI runs on Linux and requires Node.js `>=24.22.1`; release tooling verifies that exact Node.js
-version and the bundled npm `11.19.0`.
+version and npm `11.19.0`.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the
 `telecrypt-io storage` command group: login, mandatory Decryption Key Safe setup or restoration,

@@ -10,7 +10,7 @@ encrypted session. `TELECRYPT_IO_STORAGE_HOME`, when set, must be an existing or
 absolute path (it is resolved before use).
 
 The CLI requires Linux and Node.js `>=24.22.1`. Release verification
-uses that exact Node.js version and the bundled npm `11.19.0`.
+uses that exact Node.js version and npm `11.19.0`.
 
 ## Profile / state
 
