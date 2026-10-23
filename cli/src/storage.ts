@@ -509,7 +509,7 @@ export async function waitForBackupSettled(
   const deadline = Date.now() + timeoutMs;
   const client = storage.getClient();
   const active = await boundedStorageOperation(
-    (_operationSignal) => storage.keys.isRecoverySetup(),
+    (_operationSignal) => client.getCrypto()?.getActiveSessionBackupVersion() ?? Promise.resolve(null),
     timeoutMs,
     signal,
     "key backup setup status did not become available before timeout; retry the command",

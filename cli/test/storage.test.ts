@@ -153,8 +153,7 @@ describe("OIDC session refresh persistence", () => {
 describe("server-side key backup settling", () => {
   function storageWithBackup(client: EventEmitter) {
     return {
-      keys: { isRecoverySetup: vi.fn().mockResolvedValue(true) },
-      getClient: () => client,
+      getClient: () => Object.assign(client, { getCrypto: () => ({ getActiveSessionBackupVersion: vi.fn().mockResolvedValue("1") }) }),
     } as never;
   }
 
@@ -173,8 +172,7 @@ describe("server-side key backup settling", () => {
     const status = new Promise<boolean>((_resolve, reject) => { rejectStatus = reject; });
     Object.assign(client, { stopClient: () => rejectStatus(new Error("client stopped")) });
     const storage = {
-      keys: { isRecoverySetup: vi.fn(() => status) },
-      getClient: () => client,
+      getClient: () => Object.assign(client, { getCrypto: () => ({ getActiveSessionBackupVersion: vi.fn(() => status) }) }),
     } as never;
 
     await expect(waitForBackupSettled(storage, 10)).rejects.toThrow(
@@ -185,14 +183,13 @@ describe("server-side key backup settling", () => {
 
   it("rejects an invalid backup timeout before waiting", async () => {
     const client = new EventEmitter();
-    const isRecoverySetup = vi.fn().mockResolvedValue(true);
+    const getActiveSessionBackupVersion = vi.fn().mockResolvedValue("1");
     const storage = {
-      keys: { isRecoverySetup },
-      getClient: () => client,
+      getClient: () => Object.assign(client, { getCrypto: () => ({ getActiveSessionBackupVersion }) }),
     } as never;
 
     await expect(waitForBackupSettled(storage, 0)).rejects.toThrow("key backup timeout must be positive");
-    expect(isRecoverySetup).not.toHaveBeenCalled();
+    expect(getActiveSessionBackupVersion).not.toHaveBeenCalled();
   });
 
   it("aborts a storage operation before returning its deadline", async () => {

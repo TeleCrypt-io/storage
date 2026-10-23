@@ -126,27 +126,14 @@ function fakeStorage(recoverySetup = true) {
     stopClient,
     startSync,
     getClient: () => ({
+      getHomeserverUrl: () => "https://matrix.example.test",
+      getUserId: () => "@alice:example.test",
+      getDeviceId: () => "DEVICE",
       stopClient,
       getCrypto: () => crypto,
       getAccountDataFromServer: vi.fn().mockResolvedValue(recoverySetup ? {} : null),
     }),
-    keys: {
-      getStatus: vi.fn().mockResolvedValue({
-        state: recoverySetup ? "ready" : "unconfigured",
-        crossSigning: {
-          publicKeysOnDevice: recoverySetup,
-          privateKeysCachedLocally: recoverySetup,
-          privateKeysInSecretStorage: recoverySetup,
-        },
-        secretStorage: {
-          defaultKeyId: recoverySetup ? "key" : null,
-          ready: recoverySetup,
-        },
-        backupVersion: recoverySetup ? "1" : null,
-      }),
-      setupRecovery: vi.fn(),
-      restoreFromRecoveryKey: vi.fn(),
-    },
+
   };
 }
 
@@ -330,8 +317,7 @@ describe("formatOperationError", () => {
   it("preserves SDK failure and recovery instructions without reinterpreting the outcome", () => {
     for (const error of [
       new core.FileTooLargeError(),
-      new core.RecoveryRestoreError(),
-      new core.RecoverySetupAmbiguousError(),
+      new core.StorageError("This key does not unlock the existing Decryption Key Safe"),
       new core.NonEmptyTreeError("!vault:localhost"),
       new core.MutationPartialError("share vault", []),
       new core.MutationOutcomeUnknownError("upload"),
