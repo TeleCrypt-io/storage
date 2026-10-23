@@ -33,6 +33,7 @@ import {
 } from "../lib/oidcCallback";
 import { revokeOrRemember } from "../lib/revokeSession";
 import { withAccountSignal } from "../lib/accountOperation";
+import { settleKeyBackupBeforeLogout, startBackupTracking, stopBackupTracking } from "../lib/keyBackup";
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
 
@@ -99,6 +100,7 @@ function withTimeout<T>(
 function stopClient(client: TeleCryptIOStorage | null): unknown | undefined {
   if (!client) return undefined;
   try {
+    stopBackupTracking(client);
     client.getClient().stopClient();
     return undefined;
   } catch (error) {
@@ -309,6 +311,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           const accountAbortController = new AbortController();
           accountAbortRef.current = accountAbortController;
           setAccountSignal(accountAbortController.signal);
+          startBackupTracking(client);
           setStorage(client);
           sessionRef.current = currentSession;
           setSession(currentSession);
@@ -608,18 +611,37 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const connectionCleanupError = invalidateActiveConnection();
-    if (connectionCleanupError) {
-      const msg = formatOperationError(connectionCleanupError);
-      setError(msg);
-      setStatus("error");
-      return;
-    }
-    const generation = connectGenRef.current;
+    const targetStorage = storageRef.current;
+    let generation = connectGenRef.current;
     const logoutController = new AbortController();
     setLogoutPending(true);
     setError(null);
     const operation = (async () => {
+      try {
+        if (targetStorage) await settleKeyBackupBeforeLogout(targetStorage);
+      } catch (error) {
+        if (generation === connectGenRef.current) {
+          setError(formatOperationError(error));
+          setLogoutPending(false);
+        }
+        return;
+      }
+      if (generation !== connectGenRef.current) return;
+      // Preserve this logout's identity while invalidating account operations.
+      const ownLogout = logoutInflightRef.current;
+      logoutInflightRef.current = null;
+      const connectionCleanupError = invalidateActiveConnection();
+      generation = connectGenRef.current;
+      if (ownLogout) {
+        ownLogout.generation = generation;
+        logoutInflightRef.current = ownLogout;
+      }
+      if (connectionCleanupError) {
+        setError(formatOperationError(connectionCleanupError));
+        setStatus("error");
+        setLogoutPending(false);
+        return;
+      }
       let current = target;
       try {
         for (;;) {

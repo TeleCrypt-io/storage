@@ -327,29 +327,3 @@ export async function registerE2eUser(prefix: string): Promise<E2eUser> {
   const data = await waitForSynapseProvisioning(localpart, password, newDeviceId());
   return { userId: data.userId, localpart, password };
 }
-
-/** Polls the server-side key-backup endpoint until it reports at least
- * `minCount` stored keys, proving that the background upload finished. It needs
- * a device access token, which the UI
- * doesn't expose in the DOM, so the caller passes the OIDC access token held
- * in its own test session. */
-export async function waitForServerBackupCount(
-  accessToken: string,
-  minCount: number,
-  timeoutMs = 20000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const res = await fetch("http://localhost:8008/_matrix/client/v3/room_keys/version", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (res.ok) {
-      const info = (await res.json()) as { count?: number };
-      if ((info.count ?? 0) >= minCount) return;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`timed out waiting for server backup count >= ${minCount}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
