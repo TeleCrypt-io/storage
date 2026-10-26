@@ -15,6 +15,7 @@ vi.mock("../lib/core", async () => {
     ...actual,
     getVaultOwnership: vi.fn(),
     getVaultDetails: vi.fn(),
+    getMemberActionCapabilities: vi.fn(),
     listMembers: vi.fn(),
     shareVault: vi.fn(),
     unshareVault: vi.fn(),
@@ -22,6 +23,11 @@ vi.mock("../lib/core", async () => {
 });
 
 const POLL_MS = 4000;
+const ALL_MEMBER_ACTIONS: core.MemberActionCapabilities = {
+  canShare: { viewer: true, editor: true, owner: true },
+  canChangeRole: { viewer: true, editor: true, owner: true },
+  canUnshare: true,
+};
 const useStorageMock = vi.mocked(useStorage);
 
 function fakeStorage() {
@@ -47,6 +53,9 @@ beforeEach(() => {
     createdAt: null,
     memberCount: 0,
   });
+  vi.mocked(core.getMemberActionCapabilities).mockImplementation(async (_storage, _vaultId, userIds) =>
+    Object.fromEntries(userIds.map((userId) => [userId, ALL_MEMBER_ACTIONS])),
+  );
   useStorageMock.mockReturnValue({
     storage: fakeStorage(),
     session: { userId: "@alice:localhost:8008" },
@@ -83,50 +92,29 @@ describe("MembersPanel access state", () => {
     );
   });
 
-  it("refreshes a confirmed invite after ownership is revoked in flight", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
-    let role = "owner";
-    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
-      role === "owner" ? { status: "owner" } : { status: "not-owner" },
-    );
+  it("offers access changes for a Viewer summary and reports Matrix permission failures", async () => {
     vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.shareVault).mockReturnValue(share.promise);
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
+    vi.mocked(core.shareVault).mockRejectedValue(new Error("M_FORBIDDEN"));
     const user = userEvent.setup();
     render(<MembersPanel vaultId="!vault:localhost" />);
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
-    const submit = user.click(screen.getByTestId("share-submit"));
-    await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
-    role = "viewer";
-    share.resolve({ vaultId: "!vault:localhost", userId: "@bob:localhost:8008", role: "viewer" });
-    await submit;
-
-    await waitFor(() => expect(core.listMembers).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByTestId("share-submit")).not.toBeInTheDocument());
-  });
-
-  it("surfaces a share failure after ownership is revoked in flight", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
-    vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.shareVault).mockReturnValue(share.promise);
-    const user = userEvent.setup();
-    render(<MembersPanel vaultId="!vault:localhost" />);
     await screen.findByText("No members");
     await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
-    const submit = user.click(screen.getByTestId("share-submit"));
-    await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
-    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
-    share.reject(new Error("permission denied"));
-    await submit;
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
+    await user.click(screen.getByTestId("share-submit"));
 
     expect(await screen.findByTestId("members-error")).toHaveTextContent(
-      "permission denied",
+      "M_FORBIDDEN",
     );
-    expect(screen.queryByTestId("share-submit")).not.toBeInTheDocument();
+    expect(core.shareVault).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault:localhost",
+      "@bob:localhost:8008",
+      "viewer",
+      expect.objectContaining({ signal: undefined }),
+    );
+    expect(screen.getByTestId("share-submit")).toBeInTheDocument();
   });
 
   it("renders SDK-authoritative member identities", async () => {
@@ -140,20 +128,82 @@ describe("MembersPanel access state", () => {
     );
   });
 
+  it("keeps role and removal actions available for Owner members", async () => {
+    const memberId = "@bob:localhost:8008";
+    vi.mocked(core.listMembers).mockResolvedValue([
+      { userId: memberId, role: "owner", membership: "join" },
+    ]);
+    vi.mocked(core.shareVault).mockResolvedValue({
+      vaultId: "!vault:localhost",
+      userId: memberId,
+      role: "viewer",
+      rootMembership: "join",
+    });
+    vi.mocked(core.unshareVault).mockResolvedValue({
+      vaultId: "!vault:localhost",
+      userId: memberId,
+      removed: true,
+    });
+    render(<MembersPanel vaultId="!vault:localhost" />);
+
+    const role = await screen.findByLabelText("Set role for bob");
+    expect(role).toHaveValue("owner");
+    fireEvent.change(role, { target: { value: "viewer" } });
+    await waitFor(() => expect(core.shareVault).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault:localhost",
+      memberId,
+      "viewer",
+      expect.objectContaining({ signal: undefined }),
+    ));
+
+    fireEvent.click(screen.getByLabelText("Remove bob"));
+    await waitFor(() => expect(core.unshareVault).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault:localhost",
+      memberId,
+      expect.objectContaining({ signal: undefined }),
+    ));
+  });
+
+  it("hides role and membership controls when refreshed native capabilities deny them", async () => {
+    const memberId = "@bob:localhost:8008";
+    vi.mocked(core.listMembers).mockResolvedValue([
+      { userId: memberId, role: "viewer", membership: "join" },
+    ]);
+    vi.mocked(core.getMemberActionCapabilities).mockResolvedValue({
+      [memberId]: {
+        canShare: { viewer: false, editor: false, owner: false },
+        canChangeRole: { viewer: false, editor: false, owner: false },
+        canUnshare: false,
+      },
+    });
+    const user = userEvent.setup();
+    render(<MembersPanel vaultId="!vault:localhost" />);
+
+    expect(await screen.findByTestId("member-item")).toBeInTheDocument();
+    expect(screen.getByLabelText("Set role for bob")).toBeDisabled();
+    expect(screen.queryByLabelText("Remove bob")).not.toBeInTheDocument();
+    await user.type(screen.getByTestId("share-user-id"), "@carol:localhost:8008");
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeDisabled());
+    expect(core.shareVault).not.toHaveBeenCalled();
+  });
+
   it("serializes overlapping invitations", async () => {
-    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer"; rootMembership: string }>();
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.shareVault).mockReturnValue(share.promise);
     const user = userEvent.setup();
     render(<MembersPanel vaultId="!vault:localhost" />);
     await waitFor(() => expect(screen.getByText("No members")).toBeInTheDocument());
     await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
 
     const first = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalledTimes(1));
     const second = user.click(screen.getByTestId("share-submit"));
     expect(core.shareVault).toHaveBeenCalledTimes(1);
-    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost:8008", role: "viewer" });
+    share.resolve({ vaultId: "!unexpected:localhost", userId: "@bob:localhost:8008", role: "viewer", rootMembership: "invite" });
     await first;
     await second;
 
@@ -166,6 +216,7 @@ describe("MembersPanel access state", () => {
     render(<MembersPanel vaultId="!vault:localhost" />);
     await act(async () => vi.advanceTimersByTimeAsync(0));
     fireEvent.change(screen.getByTestId("share-user-id"), { target: { value: "@bob:localhost:8008" } });
+    await act(async () => vi.advanceTimersByTimeAsync(250));
     fireEvent.click(screen.getByTestId("share-submit"));
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByTestId("members-error")).toHaveTextContent("Invite may have completed");

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultContents } from "./VaultContents";
@@ -14,9 +14,12 @@ vi.mock("../lib/core", async () => {
   const actual = await vi.importActual<typeof import("../lib/core")>("../lib/core");
   return {
     ...actual,
+    getMyVaultRole: vi.fn(),
+    getTreeActionCapabilities: vi.fn(),
     listFiles: vi.fn(),
     listSubfolders: vi.fn(),
     uploadFile: vi.fn(),
+    renameFile: vi.fn(),
     downloadFile: vi.fn(),
     getFileDetails: vi.fn(),
     createSubfolder: vi.fn(),
@@ -40,6 +43,31 @@ function fakeStorage() {
 }
 
 const useStorageMock = vi.mocked(useStorage);
+const ALICE = "@alice:localhost:8008";
+
+function fileInfo(
+  id: string,
+  name: string,
+  ownerUserId = ALICE,
+  permissions: { canRename?: boolean; canDelete?: boolean } = {},
+): core.ListedFileInfo {
+  return {
+    id,
+    name,
+    ownerUserId,
+    canRename: permissions.canRename ?? true,
+    canDelete: permissions.canDelete ?? ownerUserId === ALICE,
+  };
+}
+
+const ALL_TREE_ACTIONS: core.TreeActionCapabilities = {
+  renameTree: true,
+  uploadFile: true,
+  renameFile: true,
+  createSubfolder: true,
+  deleteTree: true,
+  inviteMembers: true,
+};
 
 function oversizedFile(name: string): { file: File; arrayBuffer: ReturnType<typeof vi.fn> } {
   const file = new File([], name, { type: "application/octet-stream" });
@@ -77,11 +105,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   useStorageMock.mockReturnValue({
     storage: fakeStorage(),
+    session: { userId: ALICE },
     accountSignal: new AbortController().signal,
   } as never);
+  vi.mocked(core.getMyVaultRole).mockReturnValue("owner");
+  vi.mocked(core.getTreeActionCapabilities).mockResolvedValue(ALL_TREE_ACTIONS);
   vi.mocked(core.listFiles).mockResolvedValue([]);
   vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!child:localhost", name: "Child" }]);
   vi.mocked(core.getFileDetails).mockResolvedValue({
+    ownerUserId: ALICE,
     name: "file.txt",
     mimetype: "text/plain",
     size: 5,
@@ -96,6 +128,98 @@ afterEach(() => {
 });
 
 describe("VaultContents mutation identity", () => {
+  it("shows native-allowed actions and uploader deletion for a Viewer", async () => {
+    vi.mocked(core.getMyVaultRole).mockReturnValue("viewer");
+    vi.mocked(core.listFiles).mockResolvedValue([
+      fileInfo("$mine", "mine.txt", ALICE, { canDelete: true }),
+      fileInfo("$theirs", "theirs.txt", "@bob:localhost:8008"),
+    ]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!child:localhost", name: "Child" }]);
+    vi.mocked(core.deleteFile).mockResolvedValue({ id: "$mine", deleted: true });
+    vi.stubGlobal("confirm", () => true);
+    const user = userEvent.setup();
+
+    renderContents("!vault-a:localhost", vi.fn());
+
+    expect(await screen.findAllByTestId("download-file")).toHaveLength(2);
+    expect(screen.getByTestId("open-subfolder")).toBeInTheDocument();
+    expect(screen.getByTestId("upload-button")).toBeInTheDocument();
+    expect(screen.getAllByTestId("rename-file")).toHaveLength(2);
+    expect(screen.getByTestId("rename-subfolder")).toBeInTheDocument();
+    expect(screen.getByTestId("delete-subfolder")).toBeInTheDocument();
+    const rows = screen.getAllByTestId("file-item");
+    expect(within(rows[0]!).getByTestId("delete-file")).toBeInTheDocument();
+    expect(within(rows[1]!).queryByTestId("delete-file")).not.toBeInTheDocument();
+
+    await user.click(within(rows[0]!).getByTestId("delete-file"));
+    await waitFor(() => expect(core.deleteFile).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault-a:localhost",
+      "$mine",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ));
+  });
+
+  it("hides uploader deletion when native redaction permission is denied", async () => {
+    vi.mocked(core.getMyVaultRole).mockReturnValue("viewer");
+    vi.mocked(core.listFiles).mockResolvedValue([
+      fileInfo("$mine", "mine.txt", ALICE, { canDelete: false }),
+      fileInfo("$theirs", "theirs.txt", "@bob:localhost:8008", { canDelete: true }),
+    ]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
+
+    renderContents("!vault-a:localhost", vi.fn());
+
+    const rows = await screen.findAllByTestId("file-item");
+    expect(within(rows[0]!).queryByTestId("delete-file")).not.toBeInTheDocument();
+    expect(within(rows[1]!).queryByTestId("delete-file")).not.toBeInTheDocument();
+  });
+
+  it("uses listing capabilities for each file instead of role summaries", async () => {
+    vi.mocked(core.getMyVaultRole).mockReturnValue("editor");
+    vi.mocked(core.listFiles).mockResolvedValue([
+      fileInfo("$mine", "mine.txt", ALICE, { canRename: false, canDelete: true }),
+      fileInfo("$theirs", "theirs.txt", "@bob:localhost:8008", { canRename: true, canDelete: false }),
+    ]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!child:localhost", name: "Child" }]);
+
+    renderContents("!vault-a:localhost", vi.fn());
+
+    await screen.findByText("mine.txt");
+    expect(screen.getByTestId("upload-button")).toBeInTheDocument();
+    expect(screen.getAllByTestId("rename-file")).toHaveLength(1);
+    expect(screen.getAllByTestId("delete-file")).toHaveLength(1);
+    expect(screen.getByTestId("delete-file").closest("tr")).toHaveAttribute("data-file-id", "$mine");
+    expect(screen.getByTestId("rename-subfolder")).toBeInTheDocument();
+    expect(screen.getByTestId("delete-subfolder")).toBeInTheDocument();
+  });
+
+  it("hides mutations when refreshed native tree and file capabilities deny them", async () => {
+    vi.mocked(core.getTreeActionCapabilities).mockResolvedValue({
+      renameTree: false,
+      uploadFile: false,
+      renameFile: false,
+      createSubfolder: false,
+      deleteTree: false,
+      inviteMembers: false,
+    });
+    vi.mocked(core.listFiles).mockResolvedValue([
+      fileInfo("$mine", "mine.txt", ALICE, { canRename: false, canDelete: false }),
+    ]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!child:localhost", name: "Child" }]);
+
+    renderContents("!vault-a:localhost", vi.fn());
+
+    const row = (await screen.findAllByTestId("file-item"))[0]!;
+    expect(screen.queryByTestId("upload-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("create-subfolder")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("rename-file")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("delete-file")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rename-subfolder")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("delete-subfolder")).not.toBeInTheDocument();
+    expect(screen.getByTestId("open-subfolder")).toBeInTheDocument();
+  });
+
   it("passes the account signal to every SDK read", async () => {
     const accountSignal = new AbortController().signal;
     useStorageMock.mockReturnValue({ storage: fakeStorage(), accountSignal } as never);
@@ -113,10 +237,15 @@ describe("VaultContents mutation identity", () => {
       "!vault-a:localhost",
       { signal: accountSignal },
     );
+    expect(core.getTreeActionCapabilities).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault-a:localhost",
+      { signal: accountSignal },
+    );
   });
 
   it("renders remote file names using the SDK contract", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$bad:localhost", name: "bad/name" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$bad:localhost", "bad/name")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
 
     renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
@@ -126,7 +255,7 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("ignores an old upload error after navigating to another tree", async () => {
-    const upload = deferred<{ id: string; name: string }>();
+    const upload = deferred<{ id: string; name: string; ownerUserId: string }>();
     vi.mocked(core.uploadFile).mockReturnValue(upload.promise);
     const user = userEvent.setup();
     const onFolderDeleted = vi.fn<(folderId: string) => void>();
@@ -165,7 +294,7 @@ describe("VaultContents mutation identity", () => {
     const failure = new Error("first upload failed");
     vi.mocked(core.uploadFile)
       .mockRejectedValueOnce(failure)
-      .mockResolvedValue({ id: "$unexpected:localhost", name: "second.txt" });
+      .mockResolvedValue(fileInfo("$unexpected:localhost", "second.txt"));
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
 
@@ -242,7 +371,7 @@ describe("VaultContents mutation identity", () => {
   it("removes a deleted file after the refreshed list excludes it", async () => {
     let fileStillExists = true;
     vi.mocked(core.listFiles).mockImplementation(async () =>
-      fileStillExists ? [{ id: "$file:localhost", name: "gone.txt" }] : [],
+      fileStillExists ? [fileInfo("$file:localhost", "gone.txt")] : [],
     );
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.deleteFile).mockImplementation(async () => {
@@ -270,7 +399,7 @@ describe("VaultContents mutation identity", () => {
 
   it("does not trigger a download after the contents unmount", async () => {
     const download = deferred<{ bytes: Uint8Array; mimetype: string; name: string }>();
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file:localhost", name: "file.txt" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$file:localhost", "file.txt")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.downloadFile).mockReturnValue(download.promise);
     const createObjectURL = vi.fn(() => "blob:stale");
@@ -320,10 +449,12 @@ describe("VaultContents mutation identity", () => {
       Object.defineProperty(result, "webkitRelativePath", { value: `dir/${name}` });
       return result;
     };
+    await waitFor(() => expect(screen.getByTestId("folder-input")).toBeEnabled());
     await user.upload(screen.getByTestId("folder-input"), file("first.txt"));
     await waitFor(() => expect(core.createSubfolder).toHaveBeenCalledOnce());
     view.rerender(<VaultContents {...props} treeId="!vault-b:localhost" />);
     view.rerender(<VaultContents {...props} treeId="!vault-a:localhost" />);
+    await waitFor(() => expect(screen.getByTestId("folder-input")).toBeEnabled());
     await user.upload(screen.getByTestId("folder-input"), file("second.txt"));
     await act(async () => firstCreation.resolve());
     await waitFor(() => expect(core.uploadFile).toHaveBeenCalled());
@@ -349,6 +480,7 @@ describe("VaultContents mutation identity", () => {
     const user = userEvent.setup();
     const view = renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
     await waitFor(() => expect(screen.getByTestId("vault-detail")).toHaveAttribute("data-vault-id", "!vault-a:localhost"));
+    await waitFor(() => expect(screen.getByTestId("folder-input")).toBeEnabled());
 
     const initialSubfolderCalls = vi.mocked(core.listSubfolders).mock.calls.length;
     folderUploadStarted = true;
@@ -395,6 +527,7 @@ describe("VaultContents mutation identity", () => {
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn());
     const oversized = oversizedFile("too-large.bin");
+    await waitFor(() => expect(screen.getByTestId("file-input")).toBeEnabled());
 
     await user.upload(screen.getByTestId("file-input"), oversized.file);
 
@@ -410,6 +543,7 @@ describe("VaultContents mutation identity", () => {
     renderContents("!vault-a:localhost", vi.fn());
     const oversized = oversizedFile("too-large.bin");
     Object.defineProperty(oversized.file, "webkitRelativePath", { value: "dir/too-large.bin" });
+    await waitFor(() => expect(screen.getByTestId("folder-input")).toBeEnabled());
 
     await user.upload(screen.getByTestId("folder-input"), oversized.file);
 
@@ -437,7 +571,7 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("surfaces the SDK download size rejection", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$large", name: "too-large.bin" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$large", "too-large.bin")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     const failure = new core.FileTooLargeError();
     vi.mocked(core.downloadFile).mockRejectedValue(failure);
@@ -452,9 +586,10 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("lets the SDK own download admission when optional display metadata is absent", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$unknown", name: "unknown.bin" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$unknown", "unknown.bin")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.getFileDetails).mockResolvedValue({
+      ownerUserId: ALICE,
       name: "unknown.bin",
       mimetype: null,
       size: null,
@@ -483,6 +618,7 @@ describe("VaultContents mutation identity", () => {
     });
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn());
+    await waitFor(() => expect(screen.getByTestId("file-input")).toBeEnabled());
 
     await user.upload(screen.getByTestId("file-input"), file);
 
@@ -494,7 +630,7 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("defers object URL revocation until the download is queued", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file", name: "file.txt" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$file", "file.txt")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.downloadFile).mockResolvedValue({
       bytes: new TextEncoder().encode("download"),
@@ -502,6 +638,7 @@ describe("VaultContents mutation identity", () => {
       name: "file.txt",
     });
     vi.mocked(core.getFileDetails).mockResolvedValue({
+      ownerUserId: ALICE,
       name: "file.txt",
       mimetype: "text/plain",
       size: 8,
@@ -559,12 +696,13 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("clears previously listed files when a refresh loses access", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$old:localhost", name: "old.txt" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$old:localhost", "old.txt")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.uploadFile).mockResolvedValue({ id: "$new:localhost", name: "new.txt" });
+    vi.mocked(core.uploadFile).mockResolvedValue(fileInfo("$new:localhost", "new.txt"));
     const user = userEvent.setup();
     renderContents("!vault-a:localhost", vi.fn<(folderId: string) => void>());
     await waitFor(() => expect(screen.getByTestId("file-item")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("file-input")).toBeEnabled());
 
     vi.mocked(core.listFiles).mockRejectedValueOnce(new Error("access revoked"));
     await user.upload(
@@ -581,7 +719,7 @@ describe("VaultContents mutation identity", () => {
   });
 
   it("selects rows from the keyboard and exposes rename labels", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file:localhost", name: "file.txt" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([fileInfo("$file:localhost", "file.txt")]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     const onSelect = vi.fn();
     const user = userEvent.setup();
@@ -613,6 +751,10 @@ describe("VaultContents mutation identity", () => {
     vi.mocked(core.uploadFile).mockRejectedValueOnce(new Error("Upload may have completed; check before retrying"));
     renderContents("!vault-a:localhost", vi.fn());
     await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     const file = new File(["data"], "data.txt", { type: "text/plain" });
     Object.defineProperty(file, "arrayBuffer", { value: async () => new TextEncoder().encode("data").buffer });
     fireEvent.change(screen.getByTestId("file-input"), { target: { files: [file] } });
@@ -620,7 +762,7 @@ describe("VaultContents mutation identity", () => {
     expect(screen.getByTestId("vault-detail-error")).toHaveTextContent("Upload may have completed");
     await act(async () => vi.advanceTimersByTimeAsync(5000));
     expect(screen.getByTestId("vault-detail-error")).toHaveTextContent("Upload may have completed");
-    vi.mocked(core.uploadFile).mockResolvedValueOnce({ id: "$retry:localhost", name: file.name });
+    vi.mocked(core.uploadFile).mockResolvedValueOnce(fileInfo("$retry:localhost", file.name));
     fireEvent.change(screen.getByTestId("file-input"), { target: { files: [file] } });
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(core.uploadFile).toHaveBeenCalledTimes(2);

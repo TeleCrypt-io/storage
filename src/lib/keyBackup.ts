@@ -44,7 +44,10 @@ function persist(value: PendingBackup) {
 }
 
 async function settle(storage: TeleCryptIOStorage, value: PendingBackup, target: Target) {
-  await storage.waitForKeyBackup(target.treeId, target.fileId);
+  const result = await storage.waitForKeyBackup(target.treeId, target.fileId);
+  if (result !== "backed_up" && result !== "deleted") {
+    throw new StorageError("key backup target has not settled");
+  }
   if (value.targets.get(targetKey(target)) === target) value.targets.delete(targetKey(target));
   persist(value);
 }
@@ -59,7 +62,30 @@ export function backedUp<Args extends unknown[], Result extends { id: string }>(
     const value = state(storage);
     if (value.closing) return Promise.reject(new StorageError("Logout is finishing pending changes"));
     const write = (async () => {
-      const result = await operation(storage, ...args);
+      let result: Result;
+      try {
+        result = await operation(storage, ...args);
+      } catch (error) {
+        if (!(error instanceof MutationPartialError) || error.backupTargets.length === 0) throw error;
+        const targets = error.backupTargets.map((target) => ({ ...target }));
+        for (const target of targets) value.targets.set(targetKey(target), target);
+        persist(value);
+        try {
+          for (const target of targets) await settle(storage, value, target);
+        } catch (cause) {
+          throw new MutationPartialError(
+            error.operation,
+            error.completedIds,
+            "The encrypted change was accepted but its key backup is still pending. Keep this tab open and retry logging out when the connection recovers. Do not repeat the change or upload.",
+            {
+              cause: new AggregateError([error, cause], "partial change and key backup are incomplete"),
+              treeId: error.treeId,
+              backupTargets: targets,
+            },
+          );
+        }
+        throw error;
+      }
       const target = fileTree ? { treeId: fileTree(args), fileId: result.id } : { treeId: result.id };
       value.targets.set(targetKey(target), target);
       try {
@@ -70,7 +96,7 @@ export function backedUp<Args extends unknown[], Result extends { id: string }>(
           `${label} key backup`, [result.id],
           "Saved, but its decryption keys are not backed up yet. Keep this tab open and retry logging out " +
           "when the connection recovers. Do not repeat the change or upload the file again.",
-          { cause },
+          { cause, treeId: target.treeId, backupTargets: [target] },
         );
       }
       return result;

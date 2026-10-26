@@ -112,7 +112,7 @@ describe("encrypted mutations and backup settlement", () => {
     const result = { id: "!created:example.test", name: "name" };
     mocks.createVault.mockResolvedValue(result);
     let settle!: () => void;
-    mocks.waitForKeyBackup.mockImplementation(() => new Promise<void>((resolve) => { settle = resolve; }));
+    mocks.waitForKeyBackup.mockImplementation(() => new Promise<"backed_up">((resolve) => { settle = () => resolve("backed_up"); }));
     const pending = main(["node", "telecrypt-io", "storage", "vault", "create", "name", "--json"]);
     await vi.waitFor(() => expect(mocks.waitForKeyBackup).toHaveBeenCalled());
     expect(stdout).toBe("");
@@ -171,6 +171,32 @@ describe("encrypted mutations and backup settlement", () => {
     });
     expect(mocks.waitForKeyBackup).not.toHaveBeenCalled();
     expect(mocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a backup target from a committed upload error without repeating the upload", async () => {
+    const treeId = "!vault:example.test";
+    const mediaId = "mxc://example.test/uploaded";
+    const fileId = "$attachment";
+    const partial = new MutationPartialError(
+      "file upload",
+      [mediaId, fileId],
+      "listing readback failed",
+      { treeId, backupTargets: [{ treeId, fileId }] },
+    );
+    mocks.uploadFile.mockRejectedValue(partial);
+    mocks.waitForKeyBackup.mockResolvedValue("backed_up");
+
+    await main(["node", "telecrypt-io", "storage", "file", "upload", treeId, "name.txt", "--json"]);
+
+    expect(process.exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(JSON.parse(stderr)).toMatchObject({
+      code: "MUTATION_PARTIAL",
+      completedIds: [mediaId, fileId],
+      backupTargets: [{ treeId, fileId }],
+    });
+    expect(mocks.waitForKeyBackup).toHaveBeenCalledWith(treeId, fileId, { signal: expect.any(AbortSignal) });
+    expect(mocks.uploadFile).toHaveBeenCalledTimes(1);
   });
 
   it.each([undefined, "$attachment"])("cleans up acknowledged upload IDs with event %s", async (fileId) => {

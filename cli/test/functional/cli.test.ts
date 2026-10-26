@@ -16,7 +16,7 @@ import { approveDeviceCodeViaHttp } from "../harness/oidcApproval";
 import { registerUserInMas } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
 import type { Session } from "../../src/profile.js";
-import { acquireProfileLock, sessionPath, writeSession } from "../../src/profile.js";
+import { acquireProfileLock, readSession, sessionPath, writeSession } from "../../src/profile.js";
 
 const HOMESERVER = "http://localhost:8008";
 const testArtifactDirs = new Set<string>();
@@ -99,6 +99,10 @@ async function loginProfile(
   if (approvalFailure) throw approvalFailure;
   expect(result.code).toBe(0);
   const json = JSON.parse(result.stdout) as { userId: string; keySafe?: { state?: string } };
+  const session = readSession(dir);
+  if (!session) throw new Error("CLI login did not persist its OIDC session");
+  expect(new URL(session.oidcIssuer).origin).not.toBe(new URL(HOMESERVER).origin);
+  expect(new URL(session.oidcTokenEndpoint).origin).toBe(new URL(session.oidcIssuer).origin);
   // A fresh login can have different Safe state from the profile used to
   // create the account. Keep the current CLI response authoritative.
   return { ...user, userId: json.userId, keySafeState: json.keySafe?.state ?? "unknown" };

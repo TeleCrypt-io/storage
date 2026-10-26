@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TeleCryptIOStorage } from "@telecrypt-io/storage";
-import { backedUp, forgetDeletedBackup, settleKeyBackupBeforeLogout, startBackupTracking, stopBackupTracking } from "./keyBackup";
+import { MutationPartialError, type TeleCryptIOStorage } from "@telecrypt-io/storage";
+import { backedUp, settleKeyBackupBeforeLogout, startBackupTracking, stopBackupTracking } from "./keyBackup";
 
 const clients: TeleCryptIOStorage[] = [];
 function fixture(deviceId = "DEVICE") {
-  const waitForKeyBackup = vi.fn().mockResolvedValue(undefined);
+  const waitForKeyBackup = vi.fn().mockResolvedValue("backed_up");
   const storage = {
     getClient: () => ({ getHomeserverUrl: () => "https://matrix.example.test", getUserId: () => "@alice:example.test", getDeviceId: () => deviceId }),
     waitForKeyBackup,
@@ -26,7 +26,7 @@ afterEach(() => {
 describe("browser write and logout backup settlement", () => {
   it("does not report a write complete until backup finishes", async () => {
     const { storage, waitForKeyBackup } = fixture();
-    const backup = deferred<void>();
+    const backup = deferred<"backed_up" | "deleted">();
     waitForKeyBackup.mockReturnValue(backup.promise);
     const operation = vi.fn().mockResolvedValue({ id: "$file" });
     let finished = false;
@@ -36,7 +36,7 @@ describe("browser write and logout backup settlement", () => {
     const leaving = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(leaving);
     expect(leaving.defaultPrevented).toBe(true);
-    backup.resolve();
+    backup.resolve("backed_up");
     await result;
     const safeToLeave = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(safeToLeave);
@@ -81,13 +81,58 @@ describe("browser write and logout backup settlement", () => {
     expect(operation).toHaveBeenCalledTimes(1);
   });
 
-  it("allows deletion of a saved file to clear its pending backup", async () => {
+  it("clears a pending target when the SDK confirms remote deletion", async () => {
     const { storage, waitForKeyBackup } = fixture();
     waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
     await expect(backedUp(async () => ({ id: "$file" }), "file upload", () => "!vault")(storage)).rejects.toThrow();
-    forgetDeletedBackup(storage, "!vault", "$file");
+    waitForKeyBackup.mockResolvedValueOnce("deleted");
     await settleKeyBackupBeforeLogout(storage);
-    expect(waitForKeyBackup).toHaveBeenCalledTimes(1);
+    expect(waitForKeyBackup).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("settles backup targets from a committed upload error and preserves the mutation error", async () => {
+    const { storage, waitForKeyBackup } = fixture();
+    const mutation = new MutationPartialError(
+      "upload file",
+      ["mxc://example.test/media", "$file"],
+      "the listing readback failed",
+      { treeId: "!vault", backupTargets: [{ treeId: "!vault", fileId: "$file" }] },
+    );
+    const upload = vi.fn().mockRejectedValue(mutation);
+
+    await expect(backedUp(upload, "file upload", () => "!vault")(storage)).rejects.toBe(mutation);
+
+    expect(waitForKeyBackup).toHaveBeenCalledWith("!vault", "$file");
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("retains partial-write backup targets across reload and retries without repeating upload", async () => {
+    const { storage, waitForKeyBackup } = fixture();
+    const mutation = new MutationPartialError(
+      "upload file",
+      ["mxc://example.test/media", "$file"],
+      "the listing readback failed",
+      { treeId: "!vault", backupTargets: [{ treeId: "!vault", fileId: "$file" }] },
+    );
+    const upload = vi.fn().mockRejectedValue(mutation);
+    waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
+    await expect(backedUp(upload, "file upload", () => "!vault")(storage)).rejects.toMatchObject({
+      operation: "upload file",
+      completedIds: ["mxc://example.test/media", "$file"],
+      backupTargets: [{ treeId: "!vault", fileId: "$file" }],
+    });
+    expect(sessionStorage.length).toBe(1);
+
+    stopBackupTracking(storage);
+    const reloaded = fixture();
+    startBackupTracking(reloaded.storage);
+    await settleKeyBackupBeforeLogout(reloaded.storage);
+
+    expect(reloaded.waitForKeyBackup).toHaveBeenCalledWith("!vault", "$file");
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.length).toBe(0);
   });
 
   it("does not apply another device's pending backup to this logout", async () => {

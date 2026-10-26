@@ -16,6 +16,7 @@ import {
   beginAuthorizationCodeFlow,
   completeAuthorizationCodeFlow,
   extractDeviceIdFromScope,
+  validateOidcEndpoint,
   whoAmI,
 } from "./core";
 import type { Session } from "./session";
@@ -36,7 +37,7 @@ import {
   SESSION_PERSISTENCE_ERROR,
   SESSION_STORAGE_UNAVAILABLE,
 } from "./session";
-import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
+import { getRuntimeSettings } from "./buildConfig";
 import {
   classifyOidcCallback,
   readOidcCallbackParams,
@@ -53,6 +54,7 @@ const SAFE_CALLBACK_MESSAGES = new Set([
   "Sign-in was cancelled",
   "OIDC callback homeserver does not match the configured environment",
   "OIDC callback issuer does not match the configured environment",
+  "OIDC callback issuer could not be verified",
   "OIDC callback client identity could not be verified",
   "OIDC device identity could not be verified",
   "OIDC Matrix identity could not be verified",
@@ -228,22 +230,19 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
   clearSession();
   throwIfAborted(signal);
   const { homeserver } = getRuntimeSettings();
-  const oidcIssuer = runtimeOidcIssuer();
   const authMetadata = await discoverOidcIssuer(homeserver, signal);
-  if (authMetadata.issuer !== oidcIssuer) {
-    throw new Error("OIDC issuer does not match the configured environment");
-  }
-  assertRuntimeOidcEndpoint(authMetadata.authorization_endpoint, "OIDC authorization endpoint");
-  assertRuntimeOidcEndpoint(
+  const oidcIssuer = validateOidcEndpoint(authMetadata.issuer, "OIDC issuer");
+  validateOidcEndpoint(authMetadata.authorization_endpoint, "OIDC authorization endpoint");
+  validateOidcEndpoint(
     authMetadata.token_endpoint,
     "OIDC token endpoint",
   );
-  assertRuntimeOidcEndpoint(
+  validateOidcEndpoint(
     authMetadata.registration_endpoint,
     "OIDC registration endpoint",
   );
 
-  let clientId = loadCachedClientId(authMetadata.issuer);
+  let clientId = loadCachedClientId(oidcIssuer);
   if (!clientId || clientId.trim() === "") {
     clientId = await registerClient(
       authMetadata,
@@ -259,7 +258,7 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
       signal,
     );
     throwIfAborted(signal);
-    cacheClientId(authMetadata.issuer, clientId);
+    cacheClientId(oidcIssuer, clientId);
   }
 
   throwIfAborted(signal);
@@ -268,7 +267,7 @@ export async function beginOidcLogin(signal?: AbortSignal): Promise<void> {
     clientId,
     homeserverUrl: homeserver,
     redirectUri: redirectUri(),
-    deviceId: loadOrCreateDeviceId(authMetadata.issuer),
+    deviceId: loadOrCreateDeviceId(oidcIssuer),
     signal,
   });
   throwIfAborted(signal);
@@ -308,10 +307,6 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   if (!intent || !state || state !== intent.state) {
     clearTransientOrThrow(new Error("Sign-in callback state could not be verified"));
   }
-  if (callbackIssuer !== null && callbackIssuer !== runtimeOidcIssuer()) {
-    clearTransientOrThrow(new Error("Sign-in callback issuer could not be verified"));
-  }
-
   try {
     await cleanPendingRevocations(false, signal);
   } catch (error) {
@@ -341,16 +336,19 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
   const accessToken = tokenResponse.access_token;
   const { homeserver, serverName } = getRuntimeSettings();
   const homeserverIsRuntime = isRuntimeHomeserver(homeserverUrl, homeserver);
+  let oidcIssuer: string | undefined = typeof oidcClientSettings.issuer === "string"
+    ? oidcClientSettings.issuer
+    : undefined;
 
   try {
     throwIfAborted(signal);
-    clearSession();
-    const oidcIssuer = runtimeOidcIssuer();
     if (!homeserverIsRuntime) {
       throw new Error("OIDC callback homeserver does not match the configured environment");
     }
-    if (oidcClientSettings.issuer !== oidcIssuer) {
-      throw new Error("OIDC callback issuer does not match the configured environment");
+    oidcIssuer = validateOidcEndpoint(oidcClientSettings.issuer, "OIDC issuer");
+    clearSession();
+    if (callbackIssuer !== null && validateOidcEndpoint(callbackIssuer, "OIDC callback issuer") !== oidcIssuer) {
+      throw new Error("OIDC callback issuer could not be verified");
     }
     const expectedClientId = loadCachedClientId(oidcIssuer);
     if (!expectedClientId || oidcClientSettings.clientId !== expectedClientId) {
@@ -378,6 +376,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
       userId: who.userId,
       deviceId,
       accessToken,
+      oidcIssuer,
       refreshToken,
       oidcClientId: oidcClientSettings.clientId,
     };
@@ -390,6 +389,7 @@ export async function completeOidcLoginFromCallback(signal?: AbortSignal): Promi
       const target = {
         homeserver,
         accessToken,
+        oidcIssuer,
         refreshToken: tokenResponse.refresh_token,
         oidcClientId: oidcClientSettings.clientId,
       };

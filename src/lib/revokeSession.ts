@@ -1,10 +1,13 @@
-import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
-import { discoverOidcIssuer } from "./core";
+import { getRuntimeSettings } from "./buildConfig";
+import { discoverOidcIssuer, validateOidcEndpoint } from "./core";
 import type { PendingRevocation } from "./session";
 import {
   clearPendingRevocation,
+  clearSessionIfCurrent,
   isSessionToken,
   loadSession,
+  replacePendingRevocation,
+  saveSessionIfCurrent,
   savePendingRevocation,
   SESSION_CLEANUP_PENDING_ERROR,
   SESSION_CLEANUP_PERSISTENCE_ERROR,
@@ -42,10 +45,45 @@ export async function revokeOrRemember(
     if (!target.oidcClientId) {
       const session = loadSession();
       if (session?.homeserver === target.homeserver && session.accessToken === target.accessToken) {
-        target = { ...target, refreshToken: session.refreshToken, oidcClientId: session.oidcClientId };
+        target = {
+          ...target,
+          oidcIssuer: session.oidcIssuer,
+          refreshToken: session.refreshToken,
+          oidcClientId: session.oidcClientId,
+        };
       }
     }
-    await revokeOidcSession(target, undefined, signal);
+    await revokeOidcSession(target, undefined, signal, async (refreshed) => {
+      const previous = target;
+      target = refreshed;
+      if (!replacePendingRevocation(previous, refreshed)) {
+        throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR);
+      }
+      const session = loadSession();
+      if (
+        session && session.homeserver === previous.homeserver &&
+        session.oidcIssuer === previous.oidcIssuer &&
+        session.oidcClientId === previous.oidcClientId &&
+        session.accessToken === previous.accessToken &&
+        session.refreshToken === previous.refreshToken
+      ) {
+        saveSessionIfCurrent({
+          ...session,
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? session.refreshToken,
+        }, session);
+      }
+    });
+    const session = loadSession();
+    if (
+      session && session.homeserver === target.homeserver &&
+      session.oidcIssuer === target.oidcIssuer &&
+      session.oidcClientId === target.oidcClientId &&
+      session.accessToken === target.accessToken &&
+      session.refreshToken === target.refreshToken
+    ) {
+      clearSessionIfCurrent(session);
+    }
     clearPendingRevocation(target);
     clearPendingRevocation(requestedTarget);
     return null;
@@ -138,25 +176,63 @@ async function readResponseFailure(response: Response): Promise<Error> {
   return body.ok ? responseFailureFromText(response, body.text) : body.error;
 }
 
+function responseFailureFromRead(response: Response, body: ResponseBodyRead): Error {
+  return body.ok ? responseFailureFromText(response, body.text) : body.error;
+}
+
+function isUnknownMatrixAccessToken(text: string): boolean {
+  try {
+    const body = JSON.parse(text) as unknown;
+    return Boolean(body) && typeof body === "object" &&
+      (body as { errcode?: unknown }).errcode === "M_UNKNOWN_TOKEN";
+  } catch {
+    return false;
+  }
+}
+
+function isInvalidGrant(text: string): boolean {
+  try {
+    const body = JSON.parse(text) as unknown;
+    return Boolean(body) && typeof body === "object" &&
+      (body as { error?: unknown }).error === "invalid_grant";
+  } catch {
+    return false;
+  }
+}
+
+function refreshedRevocationTarget(
+  target: SessionRevocationTarget,
+  text: string,
+): SessionRevocationTarget {
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new Error("OIDC token refresh response was invalid", { cause: error });
+  }
+  if (!body || typeof body !== "object") {
+    throw new Error("OIDC token refresh response was invalid");
+  }
+  const tokens = body as { access_token?: unknown; refresh_token?: unknown };
+  const accessToken = tokens.access_token;
+  const refreshToken = tokens.refresh_token ?? target.refreshToken;
+  if (!isSessionToken(accessToken) || !isSessionToken(refreshToken)) {
+    throw new Error("OIDC token refresh response contained invalid credentials");
+  }
+  return { ...target, accessToken, refreshToken };
+}
+
 /** Revoke the native OAuth grant, including when its access token has expired. */
 export async function revokeOidcSession(
   target: SessionRevocationTarget,
   fetchImpl: typeof fetch = fetch,
   externalSignal?: AbortSignal,
+  onRefreshed?: (target: SessionRevocationTarget) => void | Promise<void>,
 ): Promise<void> {
-  if (
-    !isSessionToken(target.accessToken) ||
-    (target.refreshToken !== undefined && !isSessionToken(target.refreshToken))
-  ) {
+  if (!isSessionToken(target.accessToken)) {
     throw new SessionRevocationError("failed");
   }
 
-  if (!isSessionToken(target.oidcClientId)) {
-    throw new SessionRevocationError("failed", {
-      cause: new Error(`The original OAuth client ID is unavailable. Open ${runtimeOidcIssuer()} and end this session in account settings. Then close this tab and open Storage in a new tab.`),
-    });
-  }
-  const clientId = target.oidcClientId;
   assertRevocationHomeserver(target.homeserver);
   const controller = new AbortController();
   let timedOut = false;
@@ -187,10 +263,110 @@ export async function revokeOidcSession(
     controller.signal.throwIfAborted();
     const metadata = await discoverOidcIssuer(getRuntimeSettings().homeserver, controller.signal);
     controller.signal.throwIfAborted();
-    if (metadata.issuer !== runtimeOidcIssuer()) {
-      throw new Error("OIDC issuer does not match the configured environment");
+    const expectedIssuer = validateOidcEndpoint(target.oidcIssuer ?? `${target.homeserver.replace(/\/+$/u, "")}/`, "OIDC issuer");
+    if (validateOidcEndpoint(metadata.issuer, "OIDC issuer") !== expectedIssuer) {
+      throw new Error("OIDC issuer changed; session revocation was not attempted");
     }
-    const endpoint = assertRuntimeOidcEndpoint(metadata.revocation_endpoint, "OIDC revocation endpoint");
+    if (metadata.revocation_endpoint === undefined) {
+      const base = new URL(target.homeserver);
+      if (!base.pathname.endsWith("/")) base.pathname += "/";
+      const endpoint = validateOidcEndpoint(
+        new URL("_matrix/client/v3/logout", base).toString(),
+        "logout endpoint",
+      );
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${target.accessToken}` },
+        credentials: "omit",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      if (response.redirected || response.url !== endpoint) {
+        throw new SessionRevocationError("failed", {
+          cause: await readResponseFailure(response),
+        });
+      }
+      if (response.status === 200 || response.status === 204) {
+        cancelResponseBody(response);
+        return;
+      }
+      const matrixFailure = await readResponseBody(response);
+      if (
+        response.status !== 401 || !matrixFailure.ok ||
+        !isUnknownMatrixAccessToken(matrixFailure.text)
+      ) {
+        throw new SessionRevocationError("failed", {
+          cause: responseFailureFromRead(response, matrixFailure),
+        });
+      }
+      if (!isSessionToken(target.refreshToken) || !isSessionToken(target.oidcClientId)) {
+        throw new SessionRevocationError("failed", {
+          cause: responseFailureFromRead(response, matrixFailure),
+        });
+      }
+      const tokenEndpoint = validateOidcEndpoint(metadata.token_endpoint, "OIDC token endpoint");
+      const refreshResponse = await fetchImpl(tokenEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: target.refreshToken,
+          client_id: target.oidcClientId,
+        }),
+        credentials: "omit",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      if (refreshResponse.redirected || refreshResponse.url !== tokenEndpoint) {
+        throw new SessionRevocationError("failed", {
+          cause: await readResponseFailure(refreshResponse),
+        });
+      }
+      const refreshBody = await readResponseBody(refreshResponse);
+      if (
+        refreshResponse.status === 400 && refreshBody.ok &&
+        isInvalidGrant(refreshBody.text)
+      ) {
+        return;
+      }
+      if (refreshResponse.status !== 200 || !refreshBody.ok) {
+        throw new SessionRevocationError("failed", {
+          cause: responseFailureFromRead(refreshResponse, refreshBody),
+        });
+      }
+      const refreshed = refreshedRevocationTarget(target, refreshBody.text);
+      await onRefreshed?.(refreshed);
+      const retry = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${refreshed.accessToken}` },
+        credentials: "omit",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      if (
+        retry.redirected || retry.url !== endpoint ||
+        (retry.status !== 200 && retry.status !== 204)
+      ) {
+        throw new SessionRevocationError("failed", {
+          cause: await readResponseFailure(retry),
+        });
+      }
+      cancelResponseBody(retry);
+      return;
+    }
+
+    const endpoint = validateOidcEndpoint(metadata.revocation_endpoint, "OIDC revocation endpoint");
+    if (target.refreshToken !== undefined && !isSessionToken(target.refreshToken)) {
+      throw new SessionRevocationError("failed", {
+        cause: new Error("The stored OAuth refresh token is invalid."),
+      });
+    }
+    if (!isSessionToken(target.oidcClientId)) {
+      throw new SessionRevocationError("failed", {
+        cause: new Error(`The original OAuth client ID is unavailable. Open ${target.oidcIssuer ?? `${target.homeserver}/`} and end this session in account settings. Then close this tab and open Storage in a new tab.`),
+      });
+    }
+    const clientId = target.oidcClientId;
     const body = new URLSearchParams({
       token: target.refreshToken ?? target.accessToken,
       token_type_hint: target.refreshToken ? "refresh_token" : "access_token",

@@ -6,7 +6,6 @@ import * as core from "./lib/core";
 import * as oidcAuth from "./lib/oidcAuth";
 import { formatElapsed } from "./lib/formatElapsed";
 import { formatOperationError } from "./lib/formatOperationError";
-import { runtimeOidcIssuer, getRuntimeSettings } from "./lib/buildConfig";
 import * as revocation from "./lib/revokeSession";
 import * as session from "./lib/session";
 import { StorageProvider, useStorage } from "./context/StorageContext";
@@ -21,6 +20,9 @@ vi.mock("./lib/core", async () => {
     listVaults: vi.fn(),
     listPendingInvites: vi.fn(),
     getVaultOwnership: vi.fn(),
+    getMyVaultRole: vi.fn(),
+    getTreeActionCapabilities: vi.fn(),
+    getMemberActionCapabilities: vi.fn(),
     createVault: vi.fn(),
     joinVault: vi.fn(),
     declineInvite: vi.fn(),
@@ -74,6 +76,7 @@ vi.mock("./lib/revokeSession", async () => {
 
 const SESSION = {
   homeserver: "http://localhost:8008",
+  oidcIssuer: "https://auth.example.test/",
   userId: "@alice:localhost:8008",
   deviceId: "DEVICE1",
   accessToken: "tok-123",
@@ -143,8 +146,8 @@ async function loginAndReachVaults(
 ) {
   const storage = fakeStorage(recoverySetup);
   vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-    issuer: runtimeOidcIssuer(),
-    token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+    issuer: SESSION.oidcIssuer,
+    token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
   } as never);
   vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
   vi.mocked(core.listVaults).mockResolvedValue(initialVaults);
@@ -165,13 +168,23 @@ async function loginAndReachVaults(
 async function openVault(
   name = "Docs",
   opts?: {
-    files?: Array<{ id: string; name: string }>;
+    files?: Array<{ id: string; name: string; ownerUserId?: string; canRename?: boolean; canDelete?: boolean }>;
     subfolders?: Array<{ id: string; name: string }>;
     members?: Array<{ userId: string; role: string; membership: string }>;
     vaultDetailsError?: unknown;
   },
 ) {
-  vi.mocked(core.listFiles).mockImplementation(async () => opts?.files ?? []);
+  vi.mocked(core.listFiles).mockImplementation(async () =>
+    (opts?.files ?? []).map((file) => {
+      const ownerUserId = file.ownerUserId ?? SESSION.userId;
+      return {
+        ...file,
+        ownerUserId,
+        canRename: file.canRename ?? true,
+        canDelete: file.canDelete ?? ownerUserId === SESSION.userId,
+      };
+    }),
+  );
   vi.mocked(core.listSubfolders).mockImplementation(async () => opts?.subfolders ?? []);
   vi.mocked(core.listMembers).mockImplementation(async () => opts?.members ?? []);
   if (opts?.vaultDetailsError) {
@@ -196,8 +209,21 @@ beforeEach(() => {
   session.clearPendingRevocation();
   vi.clearAllMocks();
   vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
+  vi.mocked(core.getMyVaultRole).mockReturnValue("owner");
+  vi.mocked(core.getTreeActionCapabilities).mockResolvedValue({
+    renameTree: true, uploadFile: true, renameFile: true,
+    createSubfolder: true, deleteTree: true, inviteMembers: true,
+  });
+  vi.mocked(core.getMemberActionCapabilities).mockImplementation(async (_storage, _vaultId, userIds) =>
+    Object.fromEntries(userIds.map((userId) => [userId, {
+      canShare: { viewer: true, editor: true, owner: true },
+      canChangeRole: { viewer: true, editor: true, owner: true },
+      canUnshare: true,
+    } satisfies core.MemberActionCapabilities])),
+  );
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
   vi.mocked(core.getFileDetails).mockResolvedValue({
+    ownerUserId: SESSION.userId,
     name: "file.txt",
     mimetype: "text/plain",
     size: 5,
@@ -561,8 +587,8 @@ describe("login", () => {
     const storage = fakeStorage();
     vi.mocked(oidcAuth.completeOidcLoginFromCallback).mockResolvedValue(SESSION);
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-      issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+      issuer: SESSION.oidcIssuer,
+      token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
     vi.mocked(core.listVaults).mockResolvedValue([]);
@@ -591,8 +617,8 @@ describe("login", () => {
       const storage = fakeStorage();
       const bootstrap = deferred<unknown>();
       vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-        issuer: runtimeOidcIssuer(),
-        token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+        issuer: SESSION.oidcIssuer,
+        token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
       } as never);
       vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockReturnValue(bootstrap.promise as never);
       sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
@@ -635,8 +661,8 @@ describe("login", () => {
     const failure = new Error("client stop failed");
     storage.stopClient.mockImplementation(() => { throw failure; });
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-      issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+      issuer: SESSION.oidcIssuer,
+      token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
     sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
@@ -655,8 +681,8 @@ describe("login", () => {
     const storage = fakeStorage();
     const bootstrap = deferred<unknown>();
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-      issuer: runtimeOidcIssuer(),
-      token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+      issuer: SESSION.oidcIssuer,
+      token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
     } as never);
     vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockReturnValue(bootstrap.promise as never);
     sessionStorage.setItem("telecrypt-io-ui:session", JSON.stringify(SESSION));
@@ -719,7 +745,9 @@ describe("vaults", () => {
   });
 
   it("lists and selects a vault", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file1", name: "report.pdf" }]);
+    vi.mocked(core.listFiles).mockResolvedValue([{
+      id: "$file1", name: "report.pdf", ownerUserId: SESSION.userId, canRename: true, canDelete: true,
+    }]);
     await loginAndReachVaults([{ id: "!vault:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
@@ -729,48 +757,63 @@ describe("vaults", () => {
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
   });
 
-  it("hides destructive vault controls from non-owners", async () => {
+  it("keeps vault actions available to custom role summaries", async () => {
     vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
+    vi.mocked(core.getMyVaultRole).mockReturnValue("viewer");
     await loginAndReachVaults([{ id: "!shared:localhost", name: "Shared" }]);
 
     const item = screen.getByTestId("vault-item");
-    expect(item).not.toContainElement(screen.queryByTestId("rename-vault"));
-    expect(item).not.toContainElement(screen.queryByTestId("delete-vault"));
+    expect(item).toContainElement(screen.getByTestId("rename-vault"));
+    expect(item).toContainElement(screen.getByTestId("delete-vault"));
   });
 
-  it("hides access mutations from non-owners", async () => {
+  it("offers access mutations to custom role summaries and reports Matrix denial", async () => {
     vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
-    await openVault("Shared", {
+    vi.mocked(core.shareVault).mockRejectedValue(new Error("M_FORBIDDEN"));
+    const user = await openVault("Shared", {
       members: [{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }],
     });
 
     await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
-    expect(screen.getByTestId("members-readonly")).toHaveTextContent(
-      "Only vault owners can manage access.",
-    );
-    expect(screen.queryByTestId("share-submit")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("unshare-member")).not.toBeInTheDocument();
+    expect(screen.getByTestId("share-submit")).toBeInTheDocument();
+    expect(screen.getByTestId("unshare-member")).toBeInTheDocument();
+    await user.type(screen.getByTestId("share-user-id"), "@carol:localhost:8008");
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
+    await user.click(screen.getByTestId("share-submit"));
+    await waitFor(() => expect(core.shareVault).toHaveBeenCalledWith(
+      expect.anything(),
+      "!vault:localhost",
+      "@carol:localhost:8008",
+      "viewer",
+      abortOptions(),
+    ));
+    expect(await screen.findByTestId("members-error")).toHaveTextContent("M_FORBIDDEN");
   });
 
-  it("rechecks ownership before an already-rendered access mutation", async () => {
-    let role = "owner";
-    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
-      role === "owner" ? { status: "owner" } : { status: "not-owner" },
-    );
+  it("invokes access operations when role summaries do not report Owner", async () => {
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
+    vi.mocked(core.shareVault).mockResolvedValue({
+      vaultId: "!vault:localhost",
+      userId: "@carol:localhost:8008",
+      role: "viewer",
+      rootMembership: "invite",
+    });
+    vi.mocked(core.unshareVault).mockResolvedValue({
+      vaultId: "!vault:localhost",
+      userId: "@bob:localhost:8008",
+      removed: true,
+    });
     const user = await openVault("Shared", {
       members: [{ userId: "@bob:localhost:8008", role: "viewer", membership: "join" }],
     });
     await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
 
     await user.type(screen.getByTestId("share-user-id"), "@carol:localhost:8008");
-    const shareSubmit = screen.getByTestId("share-submit");
-    const unshareMember = screen.getByTestId("unshare-member");
-    role = "viewer";
-    await user.click(shareSubmit);
-    await user.click(unshareMember);
-
-    expect(core.shareVault).not.toHaveBeenCalled();
-    expect(core.unshareVault).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
+    await user.click(screen.getByTestId("share-submit"));
+    await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
+    await user.click(screen.getByTestId("unshare-member"));
+    await waitFor(() => expect(core.unshareVault).toHaveBeenCalled());
   });
 
   it("accepts a pending invite via core.joinVault", async () => {
@@ -875,8 +918,10 @@ describe("vault contents", () => {
 
   it("uploads a picked file via core.uploadFile", async () => {
     const user = await openVault();
-    vi.mocked(core.uploadFile).mockResolvedValue({ id: "$new", name: "hello.txt" });
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$new", name: "hello.txt" }]);
+    vi.mocked(core.uploadFile).mockResolvedValue({ id: "$new", name: "hello.txt", ownerUserId: SESSION.userId });
+    vi.mocked(core.listFiles).mockResolvedValue([{
+      id: "$new", name: "hello.txt", ownerUserId: SESSION.userId, canRename: true, canDelete: true,
+    }]);
 
     const file = new File(["hello world"], "hello.txt", { type: "text/plain" });
     const input = screen.getByTestId("file-input") as HTMLInputElement;
@@ -896,7 +941,13 @@ describe("vault contents", () => {
   });
 
   it("clears root contents while a nested folder is still loading", async () => {
-    const childFiles = deferred<Array<{ id: string; name: string }>>();
+    const childFiles = deferred<Array<{
+      id: string;
+      name: string;
+      ownerUserId: string;
+      canRename: boolean;
+      canDelete: boolean;
+    }>>();
     const childDetails = deferred<{
       name: string;
       id: string;
@@ -915,7 +966,9 @@ describe("vault contents", () => {
     );
 
     vi.mocked(core.listFiles).mockImplementation(async (_, id) =>
-      id === "!sub:localhost" ? childFiles.promise : [{ id: "$root", name: "root.txt" }],
+      id === "!sub:localhost" ? childFiles.promise : [{
+        id: "$root", name: "root.txt", ownerUserId: SESSION.userId, canRename: true, canDelete: true,
+      }],
     );
     vi.mocked(core.listSubfolders).mockImplementation(async (_, id) =>
       id === "!sub:localhost" ? [] : [{ id: "!sub:localhost", name: "Child" }],
@@ -1143,7 +1196,7 @@ describe("sharing", () => {
     const firstMembersA = deferred<Array<{ userId: string; role: string; membership: string }>>();
     const membersB = deferred<Array<{ userId: string; role: string; membership: string }>>();
     const secondMembersA = deferred<Array<{ userId: string; role: string; membership: string }>>();
-    const share = deferred<{ vaultId: string; userId: string; role: "viewer" }>();
+    const share = deferred<{ vaultId: string; userId: string; role: "viewer"; rootMembership: string }>();
     let callsA = 0;
     vi.mocked(core.listVaults).mockResolvedValue([
       { id: "!a:localhost", name: "A" },
@@ -1173,6 +1226,7 @@ describe("sharing", () => {
     await user.click(screen.getByRole("button", { name: "A" }));
     await screen.findByTestId("vault-detail");
     await user.type(screen.getByTestId("share-user-id"), "@old:localhost:8008");
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
     const shareTask = user.click(screen.getByTestId("share-submit"));
     await waitFor(() => expect(core.shareVault).toHaveBeenCalled());
 
@@ -1181,7 +1235,7 @@ describe("sharing", () => {
     const currentInput = await screen.findByTestId("share-user-id");
     await user.type(currentInput, "@new:localhost:8008");
 
-    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost:8008", role: "viewer" });
+    share.resolve({ vaultId: "!a:localhost", userId: "@old:localhost:8008", role: "viewer", rootMembership: "invite" });
     await shareTask;
     await waitFor(() => expect(currentInput).toHaveValue("@new:localhost:8008"));
 
@@ -1198,12 +1252,14 @@ describe("sharing", () => {
       vaultId: "!vault:localhost",
       userId: "@bob:localhost:8008",
       role: "viewer",
+      rootMembership: "invite",
     });
     vi.mocked(core.listMembers).mockResolvedValue([
       { userId: "@bob:localhost:8008", role: "viewer", membership: "invite" },
     ]);
 
     await user.type(screen.getByTestId("share-user-id"), "@bob:localhost:8008");
+    await waitFor(() => expect(screen.getByTestId("share-submit")).toBeEnabled());
     await user.click(screen.getByTestId("share-submit"));
 
     expect(core.shareVault).toHaveBeenCalledWith(
@@ -1247,7 +1303,7 @@ async function loginAtSafe(state: "setup-required" | "confirmation-required" | "
     ...(state === "confirmation-required" ? { recoveryKey: "EsTx pending key" } : {}),
   });
   vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
-    issuer: runtimeOidcIssuer(), token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
+    issuer: SESSION.oidcIssuer, token_endpoint: `${SESSION.oidcIssuer}oauth2/token`,
   } as never);
   vi.mocked(core.TeleCryptIOStorage.createFromOidc).mockResolvedValue(storage as never);
   vi.mocked(core.listVaults).mockResolvedValue([]);

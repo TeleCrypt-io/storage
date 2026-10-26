@@ -70,15 +70,17 @@ describe("server logout", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a persisted OIDC revocation endpoint outside the issuer binding", async () => {
+  it("uses a separately advertised HTTPS revocation endpoint", async () => {
     const fetchMock = vi.fn();
+    const endpoint = "https://accounts.example.test/oauth2/revoke";
+    fetchMock.mockResolvedValue(exactResponse(endpoint, null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(requestServerLogout({
+    await requestServerLogout({
       ...session,
-      oidcRevocationEndpoint: "https://evil.example/revoke",
-    })).rejects.toThrow(/OIDC revocation endpoint/);
-    expect(fetchMock).not.toHaveBeenCalled();
+      oidcRevocationEndpoint: endpoint,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(endpoint, expect.objectContaining({ redirect: "manual" }));
   });
 
   it("revokes a current OAuth session through its bound revocation endpoint", async () => {

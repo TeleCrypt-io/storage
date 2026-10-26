@@ -3,7 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import * as core from "@telecrypt-io/storage/core";
 import type { OidcClientConfig } from "@telecrypt-io/storage/core";
-import { assertOidcEndpoint, assertTrustedHomeserver, OidcLoginError, runDeviceCodeLogin, tryOpenBrowser } from "../src/oidc.js";
+import { validateOidcEndpoint } from "@telecrypt-io/storage/core";
+import { assertTrustedHomeserver, OidcLoginError, runDeviceCodeLogin, tryOpenBrowser } from "../src/oidc.js";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
@@ -89,35 +90,11 @@ describe("CLI OIDC endpoint validation", () => {
     expect(() => assertTrustedHomeserver(homeserver, serverName)).toThrow(/supported TeleCrypt deployment/u);
   });
 
-  it("binds a discovered issuer to the selected TeleCrypt deployment", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata({ issuer: "https://accounts.example.test/auth/" }));
-
-    await expect(runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() })).rejects.toThrow(
-      /configured OIDC origin/u,
-    );
-    expect(core.registerClient).not.toHaveBeenCalled();
-  });
-
-  it("rejects a persisted refresh endpoint before it can be used", () => {
-    expect(() => assertOidcEndpoint("https://evil.example/token", HOMESERVER, "OIDC token endpoint")).toThrow(
-      /configured OIDC origin/,
-    );
-    expect(assertOidcEndpoint("https://backend.telecrypt.io/oauth2/token", HOMESERVER, "OIDC token endpoint")).toBe(
-      "https://backend.telecrypt.io/oauth2/token",
-    );
-  });
-
-  it("allows the issuer-provided verification code query on the trusted origin", () => {
-    const issuer = new URL("https://backend.telecrypt.io/");
-    expect(
-      assertOidcEndpoint(
-        "https://backend.telecrypt.io/oauth2/device?user_code=ABC",
-        HOMESERVER,
-        "OIDC verification URI",
-        issuer,
-        true,
-      ),
-    ).toBe("https://backend.telecrypt.io/oauth2/device?user_code=ABC");
+  it("validates HTTPS OIDC endpoints from a separately advertised service", () => {
+    expect(validateOidcEndpoint("https://accounts.example.test/oauth2/token", "OIDC token endpoint"))
+      .toBe("https://accounts.example.test/oauth2/token");
+    expect(() => validateOidcEndpoint("http://accounts.example.test/oauth2/token", "OIDC token endpoint"))
+      .toThrow(/invalid OIDC token endpoint/u);
   });
 
   it("uses verification URLs on the trusted issuer path without filtering their query spelling", async () => {
@@ -357,23 +334,44 @@ describe("CLI OIDC endpoint validation", () => {
     expect(message).toBe("device login was not approved (invalid_grant)");
   });
 
-  it("blocks an untrusted verification redirect before exposing it or polling", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
+  it("uses the advertised verification service on a different domain", async () => {
+    const advertised = metadata({
+      issuer: "https://accounts.example.test/auth/",
+      authorization_endpoint: "https://accounts.example.test/auth/authorize",
+      device_authorization_endpoint: "https://accounts.example.test/auth/device",
+      registration_endpoint: "https://accounts.example.test/auth/registration",
+      token_endpoint: "https://accounts.example.test/auth/token",
+      revocation_endpoint: "https://accounts.example.test/auth/revoke",
+    });
+    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(advertised);
     vi.mocked(core.registerClient).mockResolvedValue("client-id");
-    const start = vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
+    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
       device_code: "device-code",
       user_code: "ABC-123",
       verification_uri: "https://accounts.example.test/auth/device",
+      verification_uri_complete: "https://accounts.example.test/auth/device?user_code=ABC-123",
       expires_in: 600,
       interval: 1,
     });
-    const poll = vi.mocked(core.waitForDeviceCodeLogin);
+    vi.mocked(core.waitForDeviceCodeLogin).mockResolvedValue({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      token_type: "Bearer",
+    });
+    vi.mocked(core.whoAmI).mockImplementation(async () => ({
+      userId: "@alice:telecrypt.io",
+      deviceId: vi.mocked(core.startDeviceCodeLogin).mock.calls[0]?.[2] ?? null,
+    }));
+    const onVerification = vi.fn();
 
-    await expect(
-      runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification: vi.fn() }),
-    ).rejects.toThrow(/configured OIDC origin/);
-    expect(start).toHaveBeenCalled();
-    expect(poll).not.toHaveBeenCalled();
+    await expect(runDeviceCodeLogin(HOMESERVER, "telecrypt.io", { onVerification, openBrowser: false }))
+      .resolves.toMatchObject({ oidcTokenEndpoint: "https://accounts.example.test/auth/token" });
+    expect(onVerification).toHaveBeenCalledWith({
+      verificationUri: "https://accounts.example.test/auth/device",
+      verificationUriComplete: "https://accounts.example.test/auth/device?user_code=ABC-123",
+      userCode: "ABC-123",
+    });
+    expect(core.waitForDeviceCodeLogin).toHaveBeenCalledWith(advertised, "client-id", expect.anything(), expect.anything());
   });
 
   it("completes the current device-code flow with trusted metadata and URLs", async () => {

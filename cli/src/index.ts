@@ -79,21 +79,54 @@ async function withBackedUpMutation<T extends { id: string }>(
   label: string,
   fileTreeId?: string,
 ): Promise<T> {
-  const result = await opened.run(operation, label, undefined,
-    label === "file upload" ? { settleAfterCancellation: true } : undefined);
+  let result: T;
   try {
-    await opened.run(
+    result = await opened.run(operation, label, undefined,
+      label === "file upload" ? { settleAfterCancellation: true } : undefined);
+  } catch (error) {
+    if (!(error instanceof core.MutationPartialError) || error.backupTargets.length === 0) throw error;
+    try {
+      for (const target of error.backupTargets) {
+        await opened.run(
+          (signal) => opened.storage.waitForKeyBackup(target.treeId, target.fileId, { signal }),
+          "key backup settlement",
+          25_000,
+        );
+      }
+    } catch (backupError) {
+      throw new core.MutationPartialError(
+        error.operation,
+        error.completedIds,
+        "the encrypted change was accepted but its key backup is still pending. Keep this profile and retry backup; do not repeat the change or upload.",
+        {
+          cause: new AggregateError([error, backupError], "partial change and key backup are incomplete"),
+          treeId: error.treeId,
+          backupTargets: error.backupTargets,
+        },
+      );
+    }
+    throw error;
+  }
+  try {
+    const settlement = await opened.run(
       (signal) => opened.storage.waitForKeyBackup(fileTreeId ?? result.id, fileTreeId ? result.id : undefined, { signal }),
       "key backup settlement",
       25_000,
     );
+    if (settlement !== "backed_up" && settlement !== "deleted") {
+      throw new StorageError("key backup target has not settled");
+    }
   } catch (error) {
     throw new core.MutationPartialError(
       label,
       [result.id],
       `the mutation committed (${result.id}), but key backup did not finish. Keep this profile and run ` +
       "`telecrypt-io storage key-safe setup` to retry backup; do not repeat the mutation.",
-      { cause: error },
+      {
+        cause: error,
+        treeId: fileTreeId ?? result.id,
+        backupTargets: [{ treeId: fileTreeId ?? result.id, ...(fileTreeId ? { fileId: result.id } : {}) }],
+      },
     );
   }
   return result;
@@ -654,15 +687,16 @@ vault
 
 vault
   .command("share <vaultId> <userId>")
-  .description("Invite a viewer to the vault")
-  .action(async (vaultId: string, userId: string, _opts, command: Command) => {
+  .description("Invite a user or change their role across the vault and its folders")
+  .option("--role <role>", "Role to assign: viewer, editor, or owner", "viewer")
+  .action(async (vaultId: string, userId: string, opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       validateSharedMatrixUserId(userId);
       return withProfileStorage(signal, async (opened) => {
-        const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, "viewer", { signal: operationSignal }), "vault share");
+        const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, opts.role, { signal: operationSignal }), "vault share");
         return {
           json: { ...result },
-          text: `Invited ${safeOutputField(result.userId)} to ${safeOutputField(result.vaultId)} as ${safeOutputField(result.role)}`,
+          text: `Set ${safeOutputField(result.userId)} to ${safeOutputField(result.role)} for ${safeOutputField(result.vaultId)} (root membership: ${safeOutputField(result.rootMembership)})`,
         };
       });
     });

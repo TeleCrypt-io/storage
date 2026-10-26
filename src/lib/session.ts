@@ -1,4 +1,9 @@
-import { MAX_MATRIX_IDENTIFIER_BYTES, validateCanonicalMatrixUserId, validateMatrixDeviceId } from "./core";
+import {
+  MAX_MATRIX_IDENTIFIER_BYTES,
+  validateCanonicalMatrixUserId,
+  validateMatrixDeviceId,
+  validateOidcEndpoint,
+} from "./core";
 import { getRuntimeSettings } from "./buildConfig";
 
 /**
@@ -12,13 +17,14 @@ export interface Session {
   deviceId: string;
   accessToken: string;
   /** OIDC/MAS authorization-code + PKCE session fields. */
+  oidcIssuer: string;
   refreshToken: string;
   oidcClientId: string;
 }
 
 export function sameSessionIdentity(a: Session, b: Session): boolean {
   return a.homeserver === b.homeserver && a.userId === b.userId &&
-    a.deviceId === b.deviceId && a.oidcClientId === b.oidcClientId;
+    a.deviceId === b.deviceId && a.oidcIssuer === b.oidcIssuer && a.oidcClientId === b.oidcClientId;
 }
 
 function sessionsEqual(a: Session, b: Session): boolean {
@@ -45,6 +51,8 @@ export interface OidcLoginIntent {
 
 export interface PendingRevocation {
   homeserver: string;
+  /** Missing only for sessions created before separate auth issuers were supported. */
+  oidcIssuer?: string;
   accessToken: string;
   refreshToken?: string;
   oidcClientId?: string;
@@ -91,6 +99,20 @@ function isOpaqueString(value: unknown): value is string {
 
 export function isSessionToken(value: unknown): value is string {
   return isOpaqueString(value);
+}
+
+function isOidcBinding(value: unknown): value is string {
+  if (!isOpaqueString(value)) return false;
+  try {
+    validateOidcEndpoint(value, "OIDC endpoint");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function legacyOidcIssuer(): string {
+  return `${getRuntimeSettings().homeserver.replace(/\/+$/u, "")}/`;
 }
 
 function isMatrixUserId(value: unknown, expectedServerName: string): value is string {
@@ -153,6 +175,7 @@ function parseSession(raw: string | null, clearInvalid: boolean): Session | null
   }
   const session = parsed as Partial<Session>;
   const { homeserver, serverName } = getRuntimeSettings();
+  const oidcIssuer = session.oidcIssuer ?? legacyOidcIssuer();
   if (
     isNonEmptyString(session.homeserver) &&
     typeof session.userId === "string" &&
@@ -161,9 +184,10 @@ function parseSession(raw: string | null, clearInvalid: boolean): Session | null
     isSessionToken(session.accessToken) &&
     isSessionToken(session.refreshToken) &&
     isOpaqueString(session.oidcClientId) &&
+    isOidcBinding(oidcIssuer) &&
     session.homeserver === homeserver
   ) {
-    return session as Session;
+    return { ...session, oidcIssuer } as Session;
   }
   return failInvalidSession(new Error("Stored session is invalid"), clearInvalid);
 }
@@ -197,6 +221,7 @@ export function saveSessionIfCurrent(session: Session, expected: Session | null)
       !isRuntimeMatrixDeviceId(session.deviceId) ||
       !isSessionToken(session.accessToken) ||
       !isSessionToken(session.refreshToken) ||
+      !isOidcBinding(session.oidcIssuer) ||
       !isOpaqueString(session.oidcClientId)
     ) {
       return false;
@@ -213,6 +238,19 @@ export function clearSession(): void {
     const store = sessionStore();
     store.removeItem(SESSION_STORAGE_KEY);
     clearOidcTransientStateFromStore(store);
+  } catch (error) {
+    throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
+  }
+}
+
+/** Clear only the session that a completed remote operation actually revoked. */
+export function clearSessionIfCurrent(expected: Session): boolean {
+  try {
+    const store = sessionStore();
+    const current = parseSession(store.getItem(SESSION_STORAGE_KEY), false);
+    if (!current || !sessionsEqual(current, expected)) return false;
+    store.removeItem(SESSION_STORAGE_KEY);
+    return true;
   } catch (error) {
     throw new Error(SESSION_PERSISTENCE_ERROR, { cause: error });
   }
@@ -243,6 +281,7 @@ function isPendingRevocation(value: unknown): value is PendingRevocation {
   const parsed = value as Partial<PendingRevocation>;
   return (
     isNonEmptyString(parsed.homeserver) &&
+    (parsed.oidcIssuer === undefined || isOidcBinding(parsed.oidcIssuer)) &&
     isSessionToken(parsed.accessToken) &&
     (parsed.refreshToken === undefined || isSessionToken(parsed.refreshToken)) &&
     (parsed.oidcClientId === undefined || isOpaqueString(parsed.oidcClientId)) &&
@@ -252,6 +291,7 @@ function isPendingRevocation(value: unknown): value is PendingRevocation {
 
 function sameRevocation(a: PendingRevocation, b: PendingRevocation): boolean {
   return a.homeserver === b.homeserver && a.accessToken === b.accessToken &&
+    (a.oidcIssuer ?? legacyOidcIssuer()) === (b.oidcIssuer ?? legacyOidcIssuer()) &&
     a.refreshToken === b.refreshToken && a.oidcClientId === b.oidcClientId;
 }
 
@@ -284,7 +324,10 @@ export function loadPendingRevocations(): PendingRevocation[] {
       cause: new Error("Stored pending revocation state is invalid"),
     });
   }
-  const pending = candidates.filter(
+  const pending = candidates.map((target) => ({
+    ...target,
+    oidcIssuer: target.oidcIssuer ?? legacyOidcIssuer(),
+  })).filter(
     (target, index, all) => all.findIndex((candidate) => sameRevocation(candidate, target)) === index,
   );
   const combined = [...pending, ...volatilePendingRevocations].filter(
@@ -296,6 +339,7 @@ export function loadPendingRevocations(): PendingRevocation[] {
 }
 
 export function savePendingRevocation(target: PendingRevocation): boolean {
+  target = { ...target, oidcIssuer: target.oidcIssuer ?? legacyOidcIssuer() };
   if (!isPendingRevocation(target)) return false;
   try {
     const pending = loadPendingRevocations();
@@ -309,6 +353,33 @@ export function savePendingRevocation(target: PendingRevocation): boolean {
     if (!volatilePendingRevocations.some((candidate) => sameRevocation(candidate, target))) {
       volatilePendingRevocations = [...volatilePendingRevocations, target];
     }
+    throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
+  }
+}
+
+/** Replace stale credentials with refreshed credentials before retrying logout. */
+export function replacePendingRevocation(
+  previous: PendingRevocation,
+  next: PendingRevocation,
+): boolean {
+  next = { ...next, oidcIssuer: next.oidcIssuer ?? legacyOidcIssuer() };
+  if (!isPendingRevocation(next)) return false;
+  let replacement: PendingRevocation[] = [];
+  try {
+    replacement = loadPendingRevocations().filter(
+      (candidate) => !sameRevocation(candidate, previous) && !sameRevocation(candidate, next),
+    );
+    replacement.push(next);
+    volatilePendingRevocations = replacement;
+    sessionStore().setItem(PENDING_REVOCATION_STORAGE_KEY, JSON.stringify(replacement));
+    return true;
+  } catch (error) {
+    volatilePendingRevocations = [
+      ...volatilePendingRevocations.filter(
+        (candidate) => !sameRevocation(candidate, previous) && !sameRevocation(candidate, next),
+      ),
+      next,
+    ];
     throw new Error(SESSION_CLEANUP_PERSISTENCE_ERROR, { cause: error });
   }
 }

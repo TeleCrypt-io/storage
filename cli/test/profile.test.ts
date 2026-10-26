@@ -95,9 +95,9 @@ describe("secret-bearing CLI profile state", () => {
     fs.writeFileSync(sessionPath(dir), JSON.stringify(foreignIdentity), { mode: 0o600 });
     expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/u);
 
-    const foreignEndpoint = { ...session(), oidcTokenEndpoint: "https://other.example.test/token" };
+    const foreignEndpoint = { ...session(), oidcTokenEndpoint: "https://accounts.example.test/token" };
     fs.writeFileSync(sessionPath(dir), JSON.stringify(foreignEndpoint), { mode: 0o600 });
-    expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/u);
+    expect(readSession(dir)).toEqual(foreignEndpoint);
   });
 
   it("writes session and crypto state as private regular files", () => {
@@ -167,11 +167,11 @@ describe("secret-bearing CLI profile state", () => {
     expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/);
   });
 
-  it("rejects an unsafe persisted OIDC revocation endpoint", () => {
+  it("rejects a non-HTTPS persisted OIDC revocation endpoint", () => {
     const dir = profileDir();
     fs.writeFileSync(
       sessionPath(dir),
-      JSON.stringify({ ...session(), oidcRevocationEndpoint: "https://evil.example/revoke" }),
+      JSON.stringify({ ...session(), oidcRevocationEndpoint: "http://accounts.example.test/revoke" }),
       { mode: 0o600 },
     );
     expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/);

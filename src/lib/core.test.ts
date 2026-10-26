@@ -5,7 +5,10 @@ describe("ownership boundary", () => {
   it("preserves an ownership-read failure as unknown", () => {
     const failure = new Error("permissions unavailable");
     const storage = {
-      getClient: () => ({ getUserId: () => "@alice:localhost" }),
+      getClient: () => ({
+        getUserId: () => "@alice:localhost",
+        getRoom: () => ({ currentState: { getMember: () => { throw failure; } } }),
+      }),
       getTree: () => ({ getPermissions: () => { throw failure; } }),
     };
 
@@ -17,11 +20,26 @@ describe("ownership boundary", () => {
 
   it("distinguishes a known non-owner from unavailable storage", () => {
     const storage = {
-      getClient: () => ({ getUserId: () => "@alice:localhost" }),
+      getClient: () => ({
+        getUserId: () => "@alice:localhost",
+        getRoom: () => ({ currentState: { getMember: () => ({ powerLevel: 0 }) } }),
+      }),
       getTree: () => ({ getPermissions: () => "viewer" }),
     };
 
     expect(getVaultOwnership(storage as never, "!vault:localhost")).toEqual({ status: "not-owner" });
     expect(getVaultOwnership(null, "!vault:localhost").status).toBe("unknown");
+  });
+
+  it("reports the native v12 creator power as Owner", () => {
+    const storage = {
+      getClient: () => ({
+        getUserId: () => "@alice:localhost",
+        getRoom: () => ({ currentState: { getMember: () => ({ powerLevel: Number.POSITIVE_INFINITY }) } }),
+      }),
+      getTree: () => ({ getPermissions: () => "viewer" }),
+    };
+
+    expect(getVaultOwnership(storage as never, "!vault:localhost")).toEqual({ status: "owner" });
   });
 });

@@ -47,12 +47,15 @@ function rawErrorMessage(error: unknown): string {
     ? `; stack: ${error.stack}`
     : "";
   const parts = [`${name}: ${message}${stack}`];
-  const details = error as Error & { code?: unknown; errcode?: unknown; status?: unknown; statusCode?: unknown; treeId?: unknown };
+  const details = error as Error & { code?: unknown; errcode?: unknown; status?: unknown; statusCode?: unknown; treeId?: unknown; backupTargets?: unknown };
   for (const key of ["code", "errcode", "status", "statusCode", "treeId"] as const) {
     const value = details[key];
     if (typeof value === "string" || typeof value === "number") parts.push(`${key}: ${value}`);
   }
   if (error instanceof MutationPartialError) parts.push(`completedIds: ${error.completedIds.join(", ")}`);
+  if (error instanceof MutationPartialError && error.backupTargets.length > 0) {
+    parts.push(`backupTargets: ${JSON.stringify(error.backupTargets)}`);
+  }
   if (error.cause !== undefined) parts.push(`cause: ${rawErrorMessage(error.cause)}`);
   if (error instanceof AggregateError) {
     error.errors.forEach((child, index) => {
@@ -115,7 +118,12 @@ export async function runAction(
       ? `; do not repeat the upload before reconciling it. Clean up the partial upload with: ${cleanupCommand}`
       : ""));
     const partial = mutation
-      ? { code: mutation.code, completedIds: mutation.completedIds, ...(mutation.treeId ? { treeId: mutation.treeId } : {}) }
+      ? {
+          code: mutation.code,
+          completedIds: mutation.completedIds,
+          ...(mutation.treeId ? { treeId: mutation.treeId } : {}),
+          ...(mutation.backupTargets.length > 0 ? { backupTargets: mutation.backupTargets } : {}),
+        }
       : {};
     await writeLine(process.stderr, json ? JSON.stringify({ error: message, ...partial }) : `Error: ${message}`);
     process.exitCode = cancellationExitCode() ?? 1;

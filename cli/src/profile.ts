@@ -2,7 +2,7 @@ import fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-import { assertOidcEndpoint, validateCanonicalMatrixUserId, validateMatrixDeviceId } from "@telecrypt-io/storage/core";
+import { validateCanonicalMatrixUserId, validateMatrixDeviceId, validateOidcEndpoint } from "@telecrypt-io/storage/core";
 import { expectedMatrixServerName } from "./topology.js";
 
 export { expectedMatrixServerName } from "./topology.js";
@@ -42,13 +42,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
-function isPersistedOidcBinding(value: unknown, homeserver: unknown, issuer?: string): value is string {
-  if (!isNonEmptyString(value) || !isNonEmptyString(homeserver)) return false;
+function isPersistedOidcBinding(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
   try {
-    const trustedIssuer = issuer === undefined
-      ? undefined
-      : new URL(assertOidcEndpoint(issuer, homeserver, "OIDC issuer"));
-    assertOidcEndpoint(value, homeserver, "OIDC endpoint", trustedIssuer);
+    validateOidcEndpoint(value, "OIDC endpoint");
     return true;
   } catch {
     return false;
@@ -90,12 +87,12 @@ function isValidSession(value: unknown): value is Session {
     expectedMatrixServerName(session.homeserver, session.matrixServerName) === session.matrixServerName &&
     isMatrixDeviceId(session.deviceId) &&
     isOpaqueValue(session.accessToken) &&
-    isPersistedOidcBinding(session.oidcIssuer, session.homeserver) &&
+    isPersistedOidcBinding(session.oidcIssuer) &&
     isOpaqueValue(session.refreshToken) &&
     isOpaqueValue(session.oidcClientId) &&
-    isPersistedOidcBinding(session.oidcTokenEndpoint, session.homeserver, session.oidcIssuer) &&
+    isPersistedOidcBinding(session.oidcTokenEndpoint) &&
     (session.oidcRevocationEndpoint === undefined ||
-      isPersistedOidcBinding(session.oidcRevocationEndpoint, session.homeserver, session.oidcIssuer))
+      isPersistedOidcBinding(session.oidcRevocationEndpoint))
   );
 }
 
@@ -106,16 +103,16 @@ export function isValidPendingSession(value: unknown): value is PendingSession {
     isNonEmptyString(pending.homeserver) &&
     isMatrixDeviceId(pending.deviceId) &&
     isOpaqueValue(pending.accessToken) &&
-    isPersistedOidcBinding(pending.oidcIssuer, pending.homeserver) &&
+    isPersistedOidcBinding(pending.oidcIssuer) &&
     (pending.refreshToken === undefined ||
       (isOpaqueValue(pending.refreshToken) &&
         isOpaqueValue(pending.oidcClientId) &&
-        isPersistedOidcBinding(pending.oidcTokenEndpoint, pending.homeserver, pending.oidcIssuer))) &&
+        isPersistedOidcBinding(pending.oidcTokenEndpoint))) &&
     (pending.oidcClientId === undefined || isOpaqueValue(pending.oidcClientId)) &&
     (pending.oidcTokenEndpoint === undefined ||
-      isPersistedOidcBinding(pending.oidcTokenEndpoint, pending.homeserver, pending.oidcIssuer)) &&
+      isPersistedOidcBinding(pending.oidcTokenEndpoint)) &&
     (pending.oidcRevocationEndpoint === undefined ||
-      isPersistedOidcBinding(pending.oidcRevocationEndpoint, pending.homeserver, pending.oidcIssuer)) &&
+      isPersistedOidcBinding(pending.oidcRevocationEndpoint)) &&
     isNonEmptyString(pending.matrixServerName) &&
     expectedMatrixServerName(pending.homeserver, pending.matrixServerName) === pending.matrixServerName &&
     (pending.userId === undefined ||
