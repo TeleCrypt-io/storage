@@ -2,6 +2,23 @@ import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 import type { E2eUser } from "./testUsers";
 
+const HOMESERVER = "http://localhost:8008";
+
+interface LocalAuthMetadata {
+  issuer: string;
+  authorization_endpoint: string;
+}
+
+async function discoverLocalAuthMetadata(): Promise<LocalAuthMetadata> {
+  const response = await fetch(`${HOMESERVER}/_matrix/client/v1/auth_metadata`);
+  if (!response.ok) throw new Error(`Matrix auth metadata returned HTTP ${response.status}`);
+  const metadata = await response.json() as LocalAuthMetadata;
+  if (new URL(metadata.issuer).origin === new URL(HOMESERVER).origin) {
+    throw new Error("local acceptance requires an auth issuer separate from the homeserver origin");
+  }
+  return metadata;
+}
+
 export interface ConsoleAudit {
   assertClean: () => void;
 }
@@ -60,8 +77,9 @@ export function auditConsole(page: Page, allowed: RegExp[] = []): ConsoleAudit {
 /** Drives the real browser authorization-code + PKCE flow through the local
  * disposable MAS. Test credentials are entered only into MAS's page, never
  * into the Storage application. */
-async function completeMasOidcLogin(page: Page, user: E2eUser): Promise<void> {
-  await page.waitForURL(/localhost:8008\/(?:authorize|login|consent|link)(?:\/|[?#]|$)/, { timeout: 20_000 });
+async function completeMasOidcLogin(page: Page, user: E2eUser, authMetadata: LocalAuthMetadata): Promise<void> {
+  const authOrigin = new URL(authMetadata.authorization_endpoint).origin;
+  await page.waitForURL((url) => url.origin === authOrigin, { timeout: 20_000 });
   await page.getByLabel("Username").fill(user.localpart);
   await page.getByLabel("Password").fill(user.password);
   await page.getByRole("button", { name: "Continue" }).click();
@@ -84,13 +102,14 @@ export async function loginViaUI(
   options: { deferKeySafe?: boolean } = {},
 ): Promise<string | undefined> {
   const startupErrors: string[] = [];
+  const authMetadata = await discoverLocalAuthMetadata();
   page.on("pageerror", (error) => startupErrors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") startupErrors.push(`console: ${message.text()}`);
   });
   await page.goto("/");
   await page.getByTestId("oidc-login").click();
-  await completeMasOidcLogin(page, user);
+  await completeMasOidcLogin(page, user, authMetadata);
   const currentUser = page.getByTestId("current-user");
   try {
     await expect(currentUser).toHaveText(user.userId, { timeout: 90_000 });

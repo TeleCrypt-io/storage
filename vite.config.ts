@@ -75,5 +75,15 @@ export default defineConfig(({ mode }) => ({
   // Vite's React Fast Refresh preamble is an inline module script. The local
   // E2E server uses the same strict CSP as the app, so disable HMR there and
   // exercise the production React runtime without weakening the policy.
-  ...(mode === "e2e" ? { server: { hmr: false } } : {}),
+  ...(mode === "e2e" ? {
+    server: {
+      hmr: false,
+      fs: {
+        // The browser acceptance run links the task SDK checkout so its real
+        // Matrix WASM asset is outside this Web checkout's default allowlist.
+        // Vite resolves these paths from the project root.
+        allow: [".", "../storage-sdk"],
+      },
+    },
+  } : {}),
 }));

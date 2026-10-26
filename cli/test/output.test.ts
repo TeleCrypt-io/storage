@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/core";
 import { runAction, safeErrorMessage, safeOutputField } from "../src/output.js";
+import { sanitizeOutput } from "./harness/cli.js";
 
 const TOKEN_ENDPOINT = "https://issuer.example.test/oauth2/token";
 
@@ -85,6 +86,17 @@ describe("CLI diagnostics", () => {
   });
   it("keeps diagnostics on one physical line", () => {
     expect(safeErrorMessage("first\u0085second\u2028third\u2029fourth")).toBe("first second third fourth");
+  });
+  it("keeps structured CLI error output parseable while redacting secret fields", () => {
+    const expected = {
+      error: 'MutationPartialError: backup failed after "room" was created',
+      client_secret: "must not escape",
+    };
+    const sanitized = sanitizeOutput(`diagnostic before JSON\n${JSON.stringify(expected)}\n`);
+    const line = sanitized.trimEnd().split("\n").at(-1);
+
+    expect(line).toBeTruthy();
+    expect(JSON.parse(line!)).toEqual({ ...expected, client_secret: "<redacted>" });
   });
   it("retains both operation and cleanup failures in one sanitized diagnostic", () => {
     const message = safeErrorMessage(

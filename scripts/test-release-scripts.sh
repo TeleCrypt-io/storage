@@ -159,7 +159,7 @@ printf '%s\n' '<meta __TELECRYPT_PUBLIC_ASSET_ORIGIN__ __TELECRYPT_DEPLOYMENT_CS
 printf '%s\n' 'Content-Security-Policy: __TELECRYPT_DEPLOYMENT_CSP__' >"$render_dist/_headers"
 assert_success node "$root/scripts/render-deployment.mjs" "$render_dist" stage.telecrypt.io
 grep -F 'https://www.telecrypt.io' "$render_dist/index.html" "$render_dist/_headers" >/dev/null
-grep -F 'https://backend.stage.telecrypt.io' "$render_dist/index.html" "$render_dist/_headers" >/dev/null
+grep -F "connect-src 'self' https:" "$render_dist/index.html" "$render_dist/_headers" >/dev/null
 [[ "$(<"$render_dist/config.json")" == *'"serverName": "stage.telecrypt.io"'* ]]
 [[ "$(<"$render_dist/CNAME")" == 'storage.stage.telecrypt.io' ]]
 ! grep -F '__TELECRYPT_' "$render_dist/index.html" "$render_dist/_headers"

@@ -18,6 +18,7 @@ import {
 
 const SESSION: Session = {
   homeserver: "http://localhost:8008",
+  oidcIssuer: "https://auth.example.test/",
   userId: "@alice:localhost:8008",
   deviceId: "DEVICE1",
   accessToken: "access-a",
@@ -37,6 +38,14 @@ describe("tab-scoped session persistence", () => {
     expect(JSON.parse(sessionStorage.getItem(SESSION_STORAGE_KEY)!)).toEqual(SESSION);
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(loadSession()).toEqual(SESSION);
+  });
+
+  it("binds a legacy session to the issuer previously enforced by Storage", () => {
+    const legacy = { ...SESSION } as Partial<Session>;
+    delete legacy.oidcIssuer;
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(legacy));
+
+    expect(loadSession()?.oidcIssuer).toBe(`${SESSION.homeserver}/`);
   });
 
   it("rejects a saved session without a device identity before connecting", () => {
@@ -167,6 +176,7 @@ describe("tab-scoped session persistence", () => {
     Object.defineProperty(window, "sessionStorage", { configurable: true, value: original });
     expect(loadPendingRevocations()).toEqual([{
       homeserver: SESSION.homeserver,
+      oidcIssuer: `${SESSION.homeserver}/`,
       accessToken: "volatile-token",
     }]);
     clearPendingRevocation();
@@ -174,7 +184,7 @@ describe("tab-scoped session persistence", () => {
   });
 
   it("retains the volatile cleanup token when persistent removal is denied", () => {
-    const pending = { homeserver: SESSION.homeserver, accessToken: "volatile-retry" };
+    const pending = { homeserver: SESSION.homeserver, oidcIssuer: `${SESSION.homeserver}/`, accessToken: "volatile-retry" };
     expect(savePendingRevocation(pending)).toBe(true);
     const original = window.sessionStorage;
     const blocked = {
@@ -267,7 +277,7 @@ describe("tab-scoped session persistence", () => {
   });
 
   it("stores a pending token revocation only in this tab", () => {
-    const pending = { homeserver: SESSION.homeserver, accessToken: SESSION.accessToken };
+    const pending = { homeserver: SESSION.homeserver, oidcIssuer: `${SESSION.homeserver}/`, accessToken: SESSION.accessToken };
 
     expect(savePendingRevocation(pending)).toBe(true);
     expect(loadPendingRevocations()).toEqual([pending]);

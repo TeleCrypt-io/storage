@@ -3,6 +3,7 @@ import {
   readResponseBody,
   ResponseBodyReadError,
   StorageError,
+  validateOidcEndpoint,
 } from "@telecrypt-io/storage/core";
 import {
   acquireProfileLock,
@@ -18,7 +19,7 @@ import {
   isOpaqueValue,
 } from "./profile.js";
 import type { ProfileLock } from "./profile.js";
-import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
+import { assertTrustedHomeserver } from "./oidc.js";
 import { commandSignal } from "./cancellation.js";
 import { safeDiagnosticText } from "./output.js";
 
@@ -142,23 +143,17 @@ export async function requestServerLogout(
   }
 
   const trustedHomeserver = assertTrustedHomeserver(session.homeserver, session.matrixServerName);
-  const issuer = new URL(assertOidcEndpoint(session.oidcIssuer, trustedHomeserver, "OIDC issuer"));
+  validateOidcEndpoint(session.oidcIssuer, "OIDC issuer");
   const revocationEndpoint = session.oidcRevocationEndpoint !== undefined
-    ? assertOidcEndpoint(
-      session.oidcRevocationEndpoint,
-      trustedHomeserver,
-      "OIDC revocation endpoint",
-      issuer,
-    )
+    ? validateOidcEndpoint(session.oidcRevocationEndpoint, "OIDC revocation endpoint")
     : undefined;
   if (revocationEndpoint !== undefined && !isOpaqueValue(session.oidcClientId)) {
     throw new StorageError("persisted OIDC revocation state is incomplete");
   }
   const base = new URL(trustedHomeserver);
   if (!base.pathname.endsWith("/")) base.pathname += "/";
-  const endpoint = assertOidcEndpoint(
+  const endpoint = validateOidcEndpoint(
     new URL("_matrix/client/v3/logout", base).toString(),
-    trustedHomeserver,
     "logout endpoint",
   );
   const controller = new AbortController();
@@ -248,11 +243,9 @@ export async function requestServerLogout(
     if (!credentials.oidcClientId || !credentials.oidcTokenEndpoint) {
       throw new StorageError("access token is no longer valid but live refresh state is incomplete");
     }
-    const tokenEndpoint = assertOidcEndpoint(
+    const tokenEndpoint = validateOidcEndpoint(
       credentials.oidcTokenEndpoint,
-      trustedHomeserver,
       "OIDC token endpoint",
-      issuer,
     );
     const refreshResponse = await fetch(tokenEndpoint, {
       method: "POST",

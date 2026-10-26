@@ -1,16 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
-import type { Member } from "../lib/core";
+import type { Member, MemberActionCapabilities } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import { isRuntimeMatrixUserId, MAX_MATRIX_ID_BYTES } from "../lib/session";
 
 const POLL_MS = 4000;
-
-function ownershipError(ownership: core.VaultOwnership): string | null {
-  return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
-}
 
 function displayName(userId: string): string {
   const local = userId.split(":")[0]?.replace(/^@/, "") ?? userId;
@@ -29,11 +25,14 @@ function isCanonicalMemberId(value: unknown): value is string {
 export function MembersPanel({ vaultId }: { vaultId: string }) {
   const { storage, session, accountSignal } = useStorage();
   const [members, setMembers] = useState<Member[] | null>(null);
+  const [memberActions, setMemberActions] = useState<Record<string, MemberActionCapabilities>>({});
+  const [shareCapabilities, setShareCapabilities] = useState<MemberActionCapabilities | null>(null);
   const [mutationError, setError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const error = [mutationError, refreshError].filter(Boolean).join("\n") || null;
   const [busy, setBusy] = useState(false);
   const [shareUserId, setShareUserId] = useState("");
+  const [shareRole, setShareRole] = useState<"viewer" | "editor" | "owner">("viewer");
   const identityRef = useRef<{ storage: typeof storage; vaultId: string }>({
     storage: null,
     vaultId: "",
@@ -46,9 +45,6 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
   // render and effect cleanup.
   // oxlint-disable-next-line react/refs
   identityRef.current = { storage, vaultId };
-  const ownership = core.getVaultOwnership(storage, vaultId);
-  const canManage = ownership.status === "owner";
-  const ownershipUnavailable = ownershipError(ownership);
 
   // Clear account-specific member state before the next identity's asynchronous refresh completes.
   // oxlint-disable react/set-state-in-effect
@@ -59,9 +55,12 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     mutationGenerationRef.current += 1;
     mutationInFlightRef.current = false;
     setMembers(null);
+    setMemberActions({});
+    setShareCapabilities(null);
     setError(null);
     setRefreshError(null);
     setShareUserId("");
+    setShareRole("viewer");
     setBusy(false);
     return () => {
       identityGenerationRef.current += 1;
@@ -84,13 +83,29 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
       const nextMembers = await withAccountSignal(accountSignal, () =>
         core.listMembers(storage, vaultId, { signal: accountSignal ?? undefined }),
       );
+      let nextActions: Record<string, MemberActionCapabilities> = {};
+      let capabilityError: unknown;
+      try {
+        nextActions = await withAccountSignal(accountSignal, () =>
+          core.getMemberActionCapabilities(
+            storage,
+            vaultId,
+            nextMembers.map((member) => member.userId),
+            { signal: accountSignal ?? undefined },
+          ),
+        );
+      } catch (error) {
+        capabilityError = error;
+      }
       if (isCurrent()) {
         setMembers(nextMembers);
-        setRefreshError(null);
+        setMemberActions(nextActions);
+        setRefreshError(capabilityError ? formatOperationError(capabilityError) : null);
       }
     } catch (err) {
       if (isCurrent()) {
         setMembers(null);
+        setMemberActions({});
         setRefreshError(formatOperationError(err));
       }
     }
@@ -112,17 +127,34 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    const targetUserId = shareUserId.trim();
+    if (!storage || !targetUserId || !isCanonicalMemberId(targetUserId)) return;
+    let stopped = false;
+    const timer = setTimeout(() => {
+      void withAccountSignal(accountSignal, () => core.getMemberActionCapabilities(
+        storage,
+        vaultId,
+        [targetUserId],
+        { signal: accountSignal ?? undefined },
+      )).then((capabilities) => {
+        if (!stopped) setShareCapabilities(capabilities[targetUserId] ?? null);
+      }, (error: unknown) => {
+        if (!stopped) setRefreshError(formatOperationError(error));
+      });
+    }, 250);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [accountSignal, shareUserId, storage, vaultId]);
+
   async function handleShare(e: FormEvent) {
     e.preventDefault();
     const expectedStorage = storage;
     const expectedVaultId = vaultId;
     const expectedGeneration = identityGenerationRef.current;
     if (!expectedStorage) return;
-    const ownership = core.getVaultOwnership(expectedStorage, expectedVaultId);
-    if (ownership.status !== "owner") {
-      if (ownership.status === "unknown") setError(ownershipError(ownership));
-      return;
-    }
     const targetUserId = shareUserId.trim();
     let canonicalMemberId = false;
     try {
@@ -149,7 +181,7 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     try {
       await withAccountSignal(
         accountSignal,
-        () => core.shareVault(expectedStorage, expectedVaultId, targetUserId, "viewer", {
+        () => core.shareVault(expectedStorage, expectedVaultId, targetUserId, shareRole, {
           signal: accountSignal ?? undefined,
         }),
       );
@@ -167,16 +199,45 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
     }
   }
 
+  async function handleChangeRole(userId: string, role: "viewer" | "editor" | "owner") {
+    const expectedStorage = storage;
+    const expectedVaultId = vaultId;
+    const expectedGeneration = identityGenerationRef.current;
+    if (!expectedStorage || !isCanonicalMemberId(userId) || mutationInFlightRef.current) return;
+    const mutationGeneration = ++mutationGenerationRef.current;
+    mutationInFlightRef.current = true;
+    const isCurrent = () =>
+      !(accountSignal?.aborted ?? false) &&
+      identityGenerationRef.current === expectedGeneration &&
+      mutationGenerationRef.current === mutationGeneration &&
+      identityRef.current.storage === expectedStorage &&
+      identityRef.current.vaultId === expectedVaultId;
+    setBusy(true);
+    setError(null);
+    try {
+      await withAccountSignal(accountSignal, () => core.shareVault(
+        expectedStorage,
+        expectedVaultId,
+        userId,
+        role,
+        { signal: accountSignal ?? undefined },
+      ));
+      if (isCurrent()) await refresh();
+    } catch (err) {
+      if (isCurrent()) setError(formatOperationError(err));
+    } finally {
+      if (mutationGenerationRef.current === mutationGeneration) {
+        mutationInFlightRef.current = false;
+        if (isCurrent()) setBusy(false);
+      }
+    }
+  }
+
   async function handleUnshare(userId: string) {
     const expectedStorage = storage;
     const expectedVaultId = vaultId;
     const expectedGeneration = identityGenerationRef.current;
     if (!expectedStorage) return;
-    const ownership = core.getVaultOwnership(expectedStorage, expectedVaultId);
-    if (ownership.status !== "owner") {
-      if (ownership.status === "unknown") setError(ownershipError(ownership));
-      return;
-    }
     if (!isCanonicalMemberId(userId)) return;
     if (mutationInFlightRef.current) return;
     const mutationGeneration = ++mutationGenerationRef.current;
@@ -210,9 +271,9 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
   return (
     <aside className="members-panel" data-testid="members-panel">
       <h3 className="panel-section-title">Access</h3>
-      {(error ?? ownershipUnavailable) && (
+      {error && (
         <p className="error" data-testid="members-error">
-          {error ?? ownershipUnavailable}
+          {error}
         </p>
       )}
 
@@ -229,11 +290,27 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
               </span>
               <span className="member-info">
                 <span className="member-name">{displayName(m.userId)}</span>
-                <span className={`role-pill ${m.role} ${m.membership === "invite" ? "invited" : ""}`}>
-                  {m.membership === "invite" ? `${m.role} · invited` : m.role}
+                <span className="role-pill-wrap">
+                  <span className={`role-pill ${m.role} ${m.membership === "invite" ? "invited" : ""}`}>
+                    {m.membership === "invite" ? `${m.role} · invited` : m.role}
+                  </span>
+                  {m.userId !== session?.userId && (
+                    <select
+                      className="tc-field member-role-select"
+                      aria-label={`Set role for ${displayName(m.userId)}`}
+                      value={m.role}
+                      onChange={(event) => void handleChangeRole(m.userId, event.target.value as "viewer" | "editor" | "owner")}
+                      disabled={busy || !Object.values(memberActions[m.userId]?.canChangeRole ?? {}).some(Boolean)}
+                      data-testid="member-role"
+                    >
+                      <option value="viewer" disabled={m.role !== "viewer" && !memberActions[m.userId]?.canChangeRole.viewer}>Viewer</option>
+                      <option value="editor" disabled={m.role !== "editor" && !memberActions[m.userId]?.canChangeRole.editor}>Editor</option>
+                      <option value="owner" disabled={m.role !== "owner" && !memberActions[m.userId]?.canChangeRole.owner}>Owner</option>
+                    </select>
+                  )}
                 </span>
               </span>
-              {canManage && m.role !== "owner" && m.userId !== session?.userId && (
+              {m.userId !== session?.userId && memberActions[m.userId]?.canUnshare && (
                 <button
                   type="button"
                   className="icon-btn"
@@ -251,35 +328,44 @@ export function MembersPanel({ vaultId }: { vaultId: string }) {
         )}
       </ul>
 
-      {canManage ? (
-        <form onSubmit={handleShare} className="invite-form">
-          <label htmlFor="share-user-id">Invite user</label>
+      <form onSubmit={handleShare} className="invite-form">
+          <label htmlFor="share-user-id">Invite or update member</label>
           <input
             className="tc-field"
             id="share-user-id"
             placeholder="@user:homeserver"
             value={shareUserId}
-            onChange={(e) => setShareUserId(e.target.value)}
+            onChange={(e) => {
+              setShareCapabilities(null);
+              setShareUserId(e.target.value);
+            }}
             maxLength={MAX_MATRIX_ID_BYTES}
             data-testid="share-user-id"
           />
           <div className="invite-form-row">
-            <span className="muted">Invited users can view and download files.</span>
+            <select
+              className="tc-field"
+              aria-label="Role for invited user"
+              value={shareRole}
+              onChange={(event) => setShareRole(event.target.value as "viewer" | "editor" | "owner")}
+              disabled={busy || !shareCapabilities}
+              data-testid="share-role"
+            >
+              <option value="viewer" disabled={!shareCapabilities?.canShare.viewer}>Viewer</option>
+              <option value="editor" disabled={!shareCapabilities?.canShare.editor}>Editor</option>
+              <option value="owner" disabled={!shareCapabilities?.canShare.owner}>Owner</option>
+            </select>
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={busy || !shareUserId.trim()}
+              disabled={busy || !shareUserId.trim() || !shareCapabilities?.canShare[shareRole]}
               data-testid="share-submit"
             >
               Invite
             </button>
           </div>
-        </form>
-      ) : (
-        <p className="members-panel-hint muted" data-testid="members-readonly">
-          Only vault owners can manage access.
-        </p>
-      )}
+          <p className="muted">Viewer is the default. Role labels summarize the standard Storage settings; Matrix room permissions authorize each operation. Matrix handles history sharing; devices without older room keys may need the Recovery Key to read old files.</p>
+      </form>
     </aside>
   );
 }

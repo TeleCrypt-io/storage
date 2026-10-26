@@ -18,6 +18,8 @@ vi.mock("../lib/core", async () => {
     listVaults: vi.fn(),
     listPendingInvites: vi.fn(),
     getVaultOwnership: vi.fn(),
+    getMyVaultRole: vi.fn(),
+    getTreeActionCapabilities: vi.fn(),
     createVault: vi.fn(),
     listFiles: vi.fn(),
     listSubfolders: vi.fn(),
@@ -33,6 +35,14 @@ vi.mock("../lib/core", async () => {
 });
 
 const POLL_MS = 2500;
+const ALL_TREE_ACTIONS: core.TreeActionCapabilities = {
+  renameTree: true,
+  uploadFile: true,
+  renameFile: true,
+  createSubfolder: true,
+  deleteTree: true,
+  inviteMembers: true,
+};
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -66,6 +76,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
   vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "owner" });
+  vi.mocked(core.getMyVaultRole).mockReturnValue("owner");
+  vi.mocked(core.getTreeActionCapabilities).mockResolvedValue(ALL_TREE_ACTIONS);
   vi.mocked(core.listFiles).mockResolvedValue([]);
   vi.mocked(core.listSubfolders).mockResolvedValue([]);
   vi.mocked(core.listMembers).mockResolvedValue([]);
@@ -76,6 +88,38 @@ afterEach(() => {
 });
 
 describe("FileManager refresh identity", () => {
+  it("offers vault actions for any role summary and lets the SDK report Matrix authorization", async () => {
+    const storage = fakeStorage("shared");
+    vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
+    vi.mocked(core.getVaultOwnership).mockReturnValue({ status: "not-owner" });
+    vi.mocked(core.getMyVaultRole).mockReturnValue("editor");
+    useStorageMock.mockReturnValue({ storage } as never);
+
+    render(<FileManager />);
+    await waitFor(() => expect(screen.getByTestId("rename-vault")).toBeInTheDocument());
+
+    expect(screen.getByTestId("delete-vault")).toBeInTheDocument();
+  });
+
+  it("hides vault mutations when refreshed native capabilities deny them", async () => {
+    vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
+    vi.mocked(core.getTreeActionCapabilities).mockResolvedValue({
+      renameTree: false,
+      uploadFile: true,
+      renameFile: true,
+      createSubfolder: true,
+      deleteTree: false,
+      inviteMembers: false,
+    });
+    useStorageMock.mockReturnValue({ storage: fakeStorage("shared") } as never);
+
+    render(<FileManager />);
+
+    await screen.findByRole("button", { name: "Shared" });
+    expect(screen.queryByTestId("rename-vault")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("delete-vault")).not.toBeInTheDocument();
+  });
+
   it("leaves recovery status and setup controls to the Recovery view", async () => {
     const storage = fakeStorage("configured");
     vi.mocked(core.listVaults).mockResolvedValue([]);
@@ -150,51 +194,48 @@ describe("FileManager refresh identity", () => {
     expect(screen.getByText("Fresh vault")).toBeInTheDocument();
   });
 
-  it("removes stale owner controls when the role snapshot becomes unavailable", async () => {
+  it("keeps vault actions independent of role-summary availability", async () => {
     vi.useFakeTimers();
     const storage = fakeStorage("shared");
     vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
+    vi.mocked(core.getVaultOwnership).mockImplementation(() => { throw new Error("ownership unavailable"); });
+    vi.mocked(core.getMyVaultRole).mockImplementation(() => { throw new Error("role unavailable"); });
     useStorageMock.mockReturnValue({ storage } as never);
     render(<FileManager />);
     await flush();
 
     expect(screen.getByTestId("rename-vault")).toBeInTheDocument();
-    vi.mocked(core.getVaultOwnership).mockImplementation(() => {
-      throw new Error("role unavailable");
-    });
-
     await act(async () => {
       vi.advanceTimersByTime(POLL_MS);
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(screen.queryByTestId("rename-vault")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("delete-vault")).not.toBeInTheDocument();
-    expect(screen.getByTestId("vault-list-error")).toHaveTextContent(
-      "role unavailable",
-    );
+    expect(screen.getByTestId("rename-vault")).toBeInTheDocument();
+    expect(screen.getByTestId("delete-vault")).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-list-error")).not.toBeInTheDocument();
+    expect(core.getVaultOwnership).not.toHaveBeenCalled();
+    expect(core.getMyVaultRole).not.toHaveBeenCalled();
   });
 
-  it("does not delete a vault after an owner role is revoked while its control is open", async () => {
+  it("attempts vault deletion after a role change and shows the native Matrix refusal", async () => {
     const storage = fakeStorage("shared");
-    let role = "owner";
-    vi.mocked(core.getVaultOwnership).mockImplementation(() =>
-      role === "owner" ? { status: "owner" } : { status: "not-owner" },
-    );
     vi.mocked(core.listVaults).mockResolvedValue([{ id: "!vault:localhost", name: "Shared" }]);
-    vi.mocked(core.deleteVault).mockResolvedValue({ id: "!vault:localhost", deleted: true });
+    vi.mocked(core.deleteVault).mockRejectedValue(new Error("M_FORBIDDEN"));
     useStorageMock.mockReturnValue({ storage } as never);
     const user = userEvent.setup();
     render(<FileManager />);
     await waitFor(() => expect(screen.getByTestId("delete-vault")).toBeInTheDocument());
 
-    const deleteButton = screen.getByTestId("delete-vault");
-    role = "viewer";
     vi.stubGlobal("confirm", () => true);
-    await user.click(deleteButton);
+    await user.click(screen.getByTestId("delete-vault"));
 
-    expect(core.deleteVault).not.toHaveBeenCalled();
+    expect(core.deleteVault).toHaveBeenCalledWith(
+      storage,
+      "!vault:localhost",
+      expect.anything(),
+    );
+    expect(await screen.findByTestId("vault-list-error")).toHaveTextContent("M_FORBIDDEN");
   });
 
   it("surfaces the SDK nonempty-vault refusal without refreshing or removing the vault", async () => {
@@ -345,6 +386,9 @@ describe("FileManager refresh identity", () => {
     await flush();
 
     fireEvent.click(screen.getByRole("button", { name: "Shared" }));
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
     fireEvent.click(screen.getByTestId("create-subfolder"));
     await flush();
     expect(core.createSubfolder).toHaveBeenCalled();

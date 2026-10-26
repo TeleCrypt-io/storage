@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
-import type { FileInfo, FolderInfo, TeleCryptIOStorage, VaultInfo } from "../lib/core";
+import type { FileInfo, FolderInfo, ListedFileInfo, TeleCryptIOStorage, TreeActionCapabilities, VaultInfo } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import {
@@ -150,9 +150,11 @@ export function VaultContents({
   selection: Selection;
   onSelect: (sel: Selection) => void;
 }) {
-  const { storage, accountSignal } = useStorage();
-  const [files, setFiles] = useState<FileInfo[] | null>(null);
+  const { storage, session, accountSignal } = useStorage();
+  const [files, setFiles] = useState<ListedFileInfo[] | null>(null);
   const [subfolders, setSubfolders] = useState<FolderInfo[] | null>(null);
+  const [treeActions, setTreeActions] = useState<TreeActionCapabilities | null>(null);
+  const [folderActions, setFolderActions] = useState<Record<string, TreeActionCapabilities>>({});
   const [mutationError, setError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const error = [mutationError, refreshError].filter(Boolean).join("\n") || null;
@@ -190,6 +192,8 @@ export function VaultContents({
     mutationInFlightRef.current = false;
     setFiles(null);
     setSubfolders(null);
+    setTreeActions(null);
+    setFolderActions({});
     setError(null);
     setRefreshError(null);
     setBusy(false);
@@ -256,9 +260,32 @@ export function VaultContents({
       if (request !== refreshRequestRef.current || !isCurrentRefresh()) {
         return;
       }
+      let nextTreeActions: TreeActionCapabilities | null = null;
+      let capabilityError: unknown;
+      try {
+        nextTreeActions = await withAccountSignal(signal, () =>
+          core.getTreeActionCapabilities(storage, treeId, { signal: signal ?? undefined }),
+        );
+      } catch (error) {
+        capabilityError = error;
+      }
+      const folderEntries = await Promise.all(subList.map(async (folder) => {
+        try {
+          const actions = await withAccountSignal(signal, () =>
+            core.getTreeActionCapabilities(storage, folder.id, { signal: signal ?? undefined }),
+          );
+          return [folder.id, actions] as const;
+        } catch (error) {
+          capabilityError ??= error;
+          return null;
+        }
+      }));
+      if (request !== refreshRequestRef.current || !isCurrentRefresh()) return;
       setFiles(fileList);
       setSubfolders(subList);
-      setRefreshError(null);
+      setTreeActions(nextTreeActions);
+      setFolderActions(Object.fromEntries(folderEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== null)));
+      setRefreshError(capabilityError ? formatOperationError(capabilityError) : null);
     } catch (err) {
       if (request === refreshRequestRef.current && isCurrentRefresh()) {
         setFiles(null);
@@ -656,49 +683,55 @@ export function VaultContents({
       </div>
 
       <div className="toolbar">
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => void handleNewSubfolder()}
-          disabled={busy}
-          data-testid="create-subfolder"
-        >
-          New folder
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => folderInputRef.current?.click()}
-          disabled={busy}
-          data-testid="upload-folder-button"
-        >
-          Upload folder
-        </button>
+        {treeActions?.createSubfolder && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void handleNewSubfolder()}
+            disabled={busy}
+            data-testid="create-subfolder"
+          >
+            New folder
+          </button>
+        )}
+        {treeActions?.createSubfolder && treeActions.uploadFile && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => folderInputRef.current?.click()}
+            disabled={busy}
+            data-testid="upload-folder-button"
+          >
+            Upload folder
+          </button>
+        )}
         <input
           type="file"
           ref={folderInputRef}
           onChange={handleFolderUpload}
-          disabled={busy}
+          disabled={busy || !treeActions?.uploadFile || !treeActions.createSubfolder}
           multiple
           hidden
           // @ts-expect-error webkitdirectory is non-standard but widely supported
           webkitdirectory=""
           data-testid="folder-input"
         />
-        <button
-          type="button"
-          className="btn"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={busy}
-          data-testid="upload-button"
-        >
-          Upload files
-        </button>
+        {treeActions?.uploadFile && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy}
+            data-testid="upload-button"
+          >
+            Upload files
+          </button>
+        )}
         <input
           type="file"
           ref={fileInputRef}
           onChange={handleUpload}
-          disabled={busy}
+          disabled={busy || !treeActions?.uploadFile}
           multiple
           hidden
           data-testid="file-input"
@@ -792,30 +825,34 @@ export function VaultContents({
                       >
                         Open
                       </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm row-action"
-                        disabled={busy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenaming({ kind: "folder", id: sub.id, name: sub.name });
-                        }}
-                        data-testid="rename-subfolder"
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm row-action btn-danger"
-                        disabled={busy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleDeleteSubfolder(sub.id);
-                        }}
-                        data-testid="delete-subfolder"
-                      >
-                        Delete
-                      </button>
+                      {folderActions[sub.id]?.renameTree && (
+                        <button
+                          type="button"
+                          className="btn btn-sm row-action"
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenaming({ kind: "folder", id: sub.id, name: sub.name });
+                          }}
+                          data-testid="rename-subfolder"
+                        >
+                          Rename
+                        </button>
+                      )}
+                      {folderActions[sub.id]?.deleteTree && (
+                        <button
+                          type="button"
+                          className="btn btn-sm row-action btn-danger"
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDeleteSubfolder(sub.id);
+                          }}
+                          data-testid="delete-subfolder"
+                        >
+                          Delete
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -875,19 +912,21 @@ export function VaultContents({
                       >
                         Download
                       </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm row-action"
-                        disabled={busy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenaming({ kind: "file", id: f.id, name: f.name });
-                        }}
-                        data-testid="rename-file"
-                      >
-                        Rename
-                      </button>
-                      <button
+                      {f.canRename && (
+                        <button
+                          type="button"
+                          className="btn btn-sm row-action"
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenaming({ kind: "file", id: f.id, name: f.name });
+                          }}
+                          data-testid="rename-file"
+                        >
+                          Rename
+                        </button>
+                      )}
+                      {f.ownerUserId === session?.userId && f.canDelete && <button
                         type="button"
                         className="btn btn-sm row-action btn-danger"
                         disabled={busy}
@@ -898,7 +937,7 @@ export function VaultContents({
                         data-testid="delete-file"
                       >
                         Delete
-                      </button>
+                      </button>}
                     </div>
                   </td>
                 </tr>
@@ -907,8 +946,7 @@ export function VaultContents({
         </table>
         {empty && (
           <p className="empty-state muted" data-testid="no-files">
-            This {isVaultRoot ? "vault" : "folder"} is empty. Upload files with the Upload files
-            button above, or drag and drop files here.
+            This {isVaultRoot ? "vault" : "folder"} is empty. Upload files with the Upload files button above, or drag and drop files here.
           </p>
         )}
       </div>

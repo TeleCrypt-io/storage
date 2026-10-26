@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
-import type { FolderInfo, VaultInfo } from "../lib/core";
+import type { FolderInfo, TreeActionCapabilities, VaultInfo } from "../lib/core";
 import { formatOperationError } from "../lib/formatOperationError";
 import { withAccountSignal } from "../lib/accountOperation";
 import {
@@ -17,10 +17,6 @@ import { VaultContents } from "./VaultContents";
 const POLL_MS = 2500;
 const UNTITLED = "Untitled vault";
 
-function ownershipError(ownership: core.VaultOwnership): string | null {
-  return ownership.status === "unknown" ? formatOperationError(ownership.error) : null;
-}
-
 function uniqueUntitledName(existing: VaultInfo[]): string {
   const names = new Set(existing.map((vault) => vault.name.toLowerCase()));
   if (!names.has(UNTITLED.toLowerCase())) return UNTITLED;
@@ -34,6 +30,7 @@ export function FileManager() {
   const accountHomeserver = session?.homeserver;
   const accountUserId = session?.userId;
   const [vaults, setVaults] = useState<VaultInfo[] | null>(null);
+  const [vaultActions, setVaultActions] = useState<Record<string, TreeActionCapabilities>>({});
   const [invites, setInvites] = useState<VaultInfo[] | null>(null);
   const [mutationError, setError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
@@ -44,7 +41,6 @@ export function FileManager() {
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const cleanupInflightRef = useRef(false);
   const [rootVault, setRootVault] = useState<VaultInfo | null>(null);
-  const [ownedVaultIds, setOwnedVaultIds] = useState<Set<string>>(new Set());
   const [folderPath, setFolderPath] = useState<FolderInfo[]>([]);
   const [sidebarRenaming, setSidebarRenaming] = useState<{ id: string; name: string } | null>(
     null,
@@ -79,8 +75,8 @@ export function FileManager() {
     pendingVaultIdsRef.current.clear();
     rootVaultRef.current = null;
     setVaults(null);
+    setVaultActions({});
     setInvites(null);
-    setOwnedVaultIds(new Set());
     setRootVault(null);
     setFolderPath([]);
     setSelection(null);
@@ -196,9 +192,30 @@ export function FileManager() {
       // The request generation excludes pre-mutation reads. This successful
       // result owns subsequent names and membership, including remote deletions.
       const refreshedVaults = result;
+      const actionEntries = await Promise.all(refreshedVaults.map(async (vault) => {
+        try {
+          return {
+            vaultId: vault.id,
+            capabilities: await core.getTreeActionCapabilities(expectedStorage, vault.id, {
+              signal: accountSignal ?? undefined,
+            }),
+          };
+        } catch (error) {
+          return { vaultId: vault.id, capabilities: null, error };
+        }
+      }));
+      if (!isCurrentStorage(expectedStorage, generation, request)) return;
+      const nextActions = Object.fromEntries(
+        actionEntries
+          .filter((entry): entry is typeof entry & { capabilities: TreeActionCapabilities } => entry.capabilities !== null)
+          .map(({ vaultId, capabilities }) => [vaultId, capabilities]),
+      );
       pendingVaultIdsRef.current.clear();
       setVaults(refreshedVaults);
+      setVaultActions(nextActions);
       setInvites(pending);
+      const capabilityFailure = actionEntries.find((entry) => entry.capabilities === null)?.error;
+      setRefreshError(capabilityFailure ? formatOperationError(capabilityFailure) : null);
       const selectedRoot = rootVaultRef.current;
       const refreshedRoot = selectedRoot && refreshedVaults.find((vault) => vault.id === selectedRoot.id);
       if (selectedRoot && !refreshedRoot) {
@@ -207,15 +224,6 @@ export function FileManager() {
         rootVaultRef.current = refreshedRoot;
         setRootVault(refreshedRoot);
       }
-      let firstOwnershipError: string | null = null;
-      const ownedIds = new Set<string>();
-      for (const vault of refreshedVaults) {
-        const ownership = core.getVaultOwnership(expectedStorage, vault.id);
-        if (ownership.status === "owner") ownedIds.add(vault.id);
-        if (!firstOwnershipError) firstOwnershipError = ownershipError(ownership);
-      }
-      setOwnedVaultIds(ownedIds);
-      setRefreshError(firstOwnershipError);
     } catch (err) {
       if (isCurrentStorage(expectedStorage, generation, request)) {
         const selectedRoot = rootVaultRef.current;
@@ -223,8 +231,8 @@ export function FileManager() {
           setRefreshError(formatOperationError(err));
           return;
         }
-        setOwnedVaultIds(new Set());
         setVaults(null);
+        setVaultActions({});
         setInvites(null);
         clearSelectedRoot();
         setRefreshError(formatOperationError(err));
@@ -351,7 +359,6 @@ export function FileManager() {
           ? current.map((vault) => (vault.id === created.id ? created : vault))
           : [...current, created];
       });
-      setOwnedVaultIds((prev) => new Set(prev).add(created.id));
       if (navigationGenerationRef.current === navigationGeneration) {
         selectRoot(created);
         setSidebarRenaming({ id: created.id, name: created.name });
@@ -376,11 +383,6 @@ export function FileManager() {
       mutationInflightRef.current
     ) return;
     const targetName = target.name;
-    const ownership = core.getVaultOwnership(expectedStorage, target.id);
-    if (ownership.status !== "owner") {
-      if (ownership.status === "unknown") setError(ownershipError(ownership));
-      return;
-    }
     mutationInflightRef.current = true;
     setBusy(true);
     setError(null);
@@ -409,11 +411,6 @@ export function FileManager() {
       !isCurrentStorage(expectedStorage, generation) ||
       mutationInflightRef.current
     ) return;
-    const ownership = core.getVaultOwnership(expectedStorage, vault.id);
-    if (ownership.status !== "owner") {
-      if (ownership.status === "unknown") setError(ownershipError(ownership));
-      return;
-    }
     if (!confirm(`Delete empty vault "${vault.name}"? Delete its files and child folders first.`)) return;
     mutationInflightRef.current = true;
     setBusy(true);
@@ -585,9 +582,9 @@ export function FileManager() {
                     {vault.name}
                   </button>
                 )}
-                {ownedVaultIds.has(vault.id) && sidebarRenaming?.id !== vault.id && (
+                {sidebarRenaming?.id !== vault.id && (vaultActions[vault.id]?.renameTree || vaultActions[vault.id]?.deleteTree) && (
                   <div className="vault-actions">
-                    <button
+                    {vaultActions[vault.id]?.renameTree && <button
                       type="button"
                       className="btn btn-sm"
                       disabled={busy}
@@ -598,8 +595,8 @@ export function FileManager() {
                       data-testid="rename-vault"
                     >
                       Rename
-                    </button>
-                    <button
+                    </button>}
+                    {vaultActions[vault.id]?.deleteTree && <button
                       type="button"
                       className="btn btn-sm btn-danger"
                       disabled={busy}
@@ -610,7 +607,7 @@ export function FileManager() {
                       data-testid="delete-vault"
                     >
                       Delete
-                    </button>
+                    </button>}
                   </div>
                 )}
               </li>

@@ -27,9 +27,13 @@ revoked token.
 The persisted device ID is required and is passed back into the shared refresh adapter, binding every
 refreshed OAuth scope to the Matrix device that owns this profile; a missing device identity is rejected
 before storage opens.
-Issuer and token endpoint metadata are also required and are checked against the trusted homeserver and
-issuer path before refresh or logout. Profiles written by older CLI releases without the issuer binding
-are rejected and must be logged in again; the CLI never guesses missing OIDC authority.
+Matrix auth metadata supplies the OAuth issuer and endpoints, which may be hosted separately from the
+homeserver. The CLI binds these values to the saved session and uses the advertised token and revocation
+endpoints for refresh and logout; if revocation is omitted, it ends the session through the trusted
+homeserver's Matrix logout endpoint. If Matrix reports `M_UNKNOWN_TOKEN`, logout refreshes through the
+discovered token endpoint, persists any rotated credentials, and retries native logout. The profile is
+retained if the server does not confirm logout. Profiles written by older CLI releases without the issuer
+binding are rejected and must be logged in again; the CLI never guesses missing OIDC authority.
 The profile is protected by filesystem ownership and mode checks. A same-user process with write
 access is inside the trust boundary and must not replace the profile directory while a command is
 running. Writes are atomic, and the command-wide lock prevents ordinary simultaneous CLI commands
@@ -106,7 +110,7 @@ telecrypt-io storage vault subfolder create <parentId> <name>
 telecrypt-io storage vault subfolder list <parentId>
 telecrypt-io storage vault subfolder rename <folderId> <name>
 telecrypt-io storage vault subfolder delete <folderId>
-telecrypt-io storage vault share <vaultId> <userId>  # invite as a viewer
+telecrypt-io storage vault share <vaultId> <userId> [--role <viewer|editor|owner>]
 telecrypt-io storage vault join <vaultId>            # accept a pending invite
 telecrypt-io storage vault members <vaultId>         # participants + roles
 telecrypt-io storage vault unshare <vaultId> <userId>
@@ -114,8 +118,15 @@ telecrypt-io storage vault rename <vaultId> <name>
 telecrypt-io storage vault delete <vaultId>
 ```
 
-Vault owners are the only participants who can change files. Invited viewers can list and download
-files. The `subfolder` commands manage nested directory nodes within a vault.
+Shares default to Viewer. The upstream defaults allow Editors to write encrypted file and tree
+events, while Owners manage invitations and role changes. Custom power levels can change each
+operation; clients read native Matrix capabilities for action availability and Matrix decides when
+an action is attempted. File deletion also requires original uploader ownership and native
+redaction permission; the default Viewer settings do not allow redaction, though a custom Matrix
+configuration may. Changing a role applies to the vault and its existing folders. New folders
+inherit current parent access. Matrix can deny changes to or removal of Owners, including at a
+descendant, leaving a partial result that identifies completed rooms. The `subfolder` commands
+manage nested directory nodes within a vault.
 
 ### Files
 
@@ -157,6 +168,8 @@ TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage key-safe confirm-saved --json
 VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
 
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --json
+# Explicit role changes use the same Matrix permission checks across folders.
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --role editor --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage vault join "$VAULT_ID" --json
 
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file upload "$VAULT_ID" ./report.pdf --json

@@ -45,10 +45,10 @@ vi.mock("./revokeSession", async () => {
 });
 
 const METADATA = {
-  issuer: `${getRuntimeSettings().homeserver}/`,
-  authorization_endpoint: `${getRuntimeSettings().homeserver}/authorize`,
-  token_endpoint: `${getRuntimeSettings().homeserver}/oauth2/token`,
-  registration_endpoint: `${getRuntimeSettings().homeserver}/oauth2/registration`,
+  issuer: "https://auth.example.test/",
+  authorization_endpoint: "https://auth.example.test/authorize",
+  token_endpoint: "https://auth.example.test/oauth2/token",
+  registration_endpoint: "https://auth.example.test/oauth2/registration",
 };
 
 function memoryStorage(): Storage {
@@ -158,13 +158,16 @@ describe("beginOidcLogin stable device id", () => {
     expect(second.deviceId).toBe(opts.deviceId);
   });
 
-  it("rejects discovery from an issuer other than the runtime-configured issuer", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue({ issuer: "https://unexpected.example.test/" } as never);
+  it("uses the separate issuer and endpoints advertised by the homeserver", async () => {
+    localStorage.removeItem("telecrypt-io-ui:oidc-client:" + METADATA.issuer);
+    await beginOidcLogin();
 
-    await expect(beginOidcLogin()).rejects.toThrow(
-      "OIDC issuer does not match the configured environment",
-    );
-    expect(core.registerClient).not.toHaveBeenCalled();
+    expect(core.discoverOidcIssuer).toHaveBeenCalledWith(getRuntimeSettings().homeserver, undefined);
+    expect(core.registerClient).toHaveBeenCalledWith(METADATA, expect.anything(), undefined);
+    expect(core.beginAuthorizationCodeFlow).toHaveBeenCalledWith(expect.objectContaining({
+      authMetadata: METADATA,
+      homeserverUrl: getRuntimeSettings().homeserver,
+    }));
   });
 
   it("revokes an existing session before starting a replacement login", async () => {
@@ -174,6 +177,7 @@ describe("beginOidcLogin stable device id", () => {
         homeserver: getRuntimeSettings().homeserver,
         userId: "@alice:localhost:8008",
         deviceId: "DEVICE1",
+        oidcIssuer: METADATA.issuer,
         accessToken: "old-access",
         refreshToken: "old-refresh",
         oidcClientId: "client-123",
@@ -193,10 +197,10 @@ describe("beginOidcLogin stable device id", () => {
     expect(sessionStorage.getItem("telecrypt-io-ui:session")).toBeNull();
   });
 
-  it("rejects a token endpoint outside the runtime-configured issuer", async () => {
+  it("rejects an unsafe token endpoint advertised by the homeserver", async () => {
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue({
       ...METADATA,
-      token_endpoint: "https://other.example.test/token",
+      token_endpoint: "javascript:alert(1)",
     } as never);
 
     await expect(beginOidcLogin()).rejects.toThrow("OIDC token endpoint");
@@ -218,16 +222,32 @@ describe("beginOidcLogin stable device id", () => {
     expect(core.whoAmI).not.toHaveBeenCalled();
   });
 
-  it("rejects a callback issuer that is not the runtime issuer before exchange", async () => {
+  it("checks the callback issuer against the issuer bound to the PKCE transaction", async () => {
     callback("?code=one&state=two&iss=https%3A%2F%2Funexpected.example.test%2Fauth%2F");
+    vi.mocked(core.completeAuthorizationCodeFlow).mockResolvedValue({
+      homeserverUrl: getRuntimeSettings().homeserver,
+      oidcClientSettings: { issuer: METADATA.issuer, clientId: "client-123" },
+      tokenResponse: {
+        access_token: "issued-access",
+        refresh_token: "issued-refresh",
+        scope: "urn:matrix:client:device:DEVICE1234",
+      },
+    } as never);
 
     await expect(completeOidcLoginFromCallback()).rejects.toThrow(
-      "Sign-in callback issuer could not be verified",
+      "OIDC callback issuer could not be verified",
     );
-    expect(core.completeAuthorizationCodeFlow).not.toHaveBeenCalled();
+    expect(core.completeAuthorizationCodeFlow).toHaveBeenCalledOnce();
+    expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
+      homeserver: getRuntimeSettings().homeserver,
+      accessToken: "issued-access",
+      oidcIssuer: METADATA.issuer,
+      refreshToken: "issued-refresh",
+      oidcClientId: "client-123",
+    }, undefined, undefined);
   });
 
-  it("rejects a callback for a different issuer", async () => {
+  it("rejects a callback for an issuer without a cached client binding", async () => {
     callback("?code=one&state=two");
     vi.mocked(core.completeAuthorizationCodeFlow).mockResolvedValue({
       homeserverUrl: `${getRuntimeSettings().homeserver}/`,
@@ -235,14 +255,13 @@ describe("beginOidcLogin stable device id", () => {
       tokenResponse: { access_token: "access", refresh_token: "refresh", scope: "scope" },
     } as never);
 
-    await expect(completeOidcLoginFromCallback()).rejects.toThrow(
-      "OIDC callback issuer does not match the configured environment",
-    );
+    await expect(completeOidcLoginFromCallback()).rejects.toThrow("OIDC callback client identity could not be verified");
     expect(window.history.replaceState).toHaveBeenCalledWith({}, "", "/");
     expect(core.whoAmI).not.toHaveBeenCalled();
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "access",
+      oidcIssuer: "https://unexpected.example.test/",
       refreshToken: "refresh",
       oidcClientId: "client-123",
     }, undefined, undefined);
@@ -280,6 +299,7 @@ describe("beginOidcLogin stable device id", () => {
     await expect(completeOidcLoginFromCallback()).rejects.toThrow("Sign-in was cancelled");
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
+      oidcIssuer: `${getRuntimeSettings().homeserver}/`,
       accessToken: "old-access",
     }, undefined, undefined);
     expect(sessionStorage.getItem("telecrypt-io-ui:pending-revocation")).toBeNull();
@@ -370,6 +390,7 @@ describe("beginOidcLogin stable device id", () => {
 
     await expect(completeOidcLoginFromCallback()).resolves.toMatchObject({
       homeserver: getRuntimeSettings().homeserver,
+      oidcIssuer: METADATA.issuer,
       userId: "@alice:localhost:8008",
       deviceId: "DEVICE1234",
     });
@@ -445,7 +466,7 @@ describe("beginOidcLogin stable device id", () => {
     expect(core.completeAuthorizationCodeFlow).toHaveBeenCalledOnce();
     expect(core.whoAmI).not.toHaveBeenCalled();
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith(
-      { homeserver: getRuntimeSettings().homeserver, accessToken: "issued-access", refreshToken: "issued-refresh", oidcClientId: "client-123" },
+      { homeserver: getRuntimeSettings().homeserver, accessToken: "issued-access", oidcIssuer: METADATA.issuer, refreshToken: "issued-refresh", oidcClientId: "client-123" },
       undefined,
       undefined,
     );
@@ -468,6 +489,7 @@ describe("beginOidcLogin stable device id", () => {
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      oidcIssuer: METADATA.issuer,
       refreshToken: "new-refresh",
       oidcClientId: "client-123",
     }, undefined, undefined);
@@ -492,6 +514,7 @@ describe("beginOidcLogin stable device id", () => {
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      oidcIssuer: METADATA.issuer,
       refreshToken: "new-refresh",
       oidcClientId: "client-123",
     }, undefined, undefined);
@@ -516,6 +539,7 @@ describe("beginOidcLogin stable device id", () => {
     expect(revocation.revokeOidcSession).toHaveBeenCalledWith({
       homeserver: getRuntimeSettings().homeserver,
       accessToken: "new-access",
+      oidcIssuer: METADATA.issuer,
       refreshToken: "new-refresh",
       oidcClientId: "client-123",
     }, undefined, undefined);

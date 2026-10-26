@@ -98,31 +98,3 @@ export function getRuntimeSettings(): RuntimeSettings {
   if (!loadedSettings) throw new Error("Storage deployment config has not been loaded");
   return loadedSettings;
 }
-
-export function runtimeOidcIssuer(): string {
-  return `${getRuntimeSettings().homeserver}/`;
-}
-
-export function assertRuntimeOidcEndpoint(value: unknown, name: string): string {
-  if (typeof value !== "string") throw new Error(`${name} is missing from OIDC discovery`);
-  const issuer = new URL(runtimeOidcIssuer());
-  let endpoint: URL;
-  try {
-    endpoint = new URL(value);
-  } catch {
-    throw new Error(`${name} must be a valid URL`);
-  }
-  if (
-    endpoint.protocol !== issuer.protocol ||
-    endpoint.origin !== issuer.origin ||
-    endpoint.username !== "" ||
-    endpoint.password !== "" ||
-    endpoint.port !== issuer.port ||
-    endpoint.search !== "" ||
-    endpoint.hash !== "" ||
-    endpoint.toString() !== value
-  ) {
-    throw new Error(`${name} must remain on the configured OIDC origin`);
-  }
-  return value;
-}

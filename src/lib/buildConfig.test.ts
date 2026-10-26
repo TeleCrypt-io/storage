@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getRuntimeSettings, loadRuntimeSettings, runtimeOidcIssuer } from "./buildConfig";
+import { getRuntimeSettings, loadRuntimeSettings } from "./buildConfig";
 
 function setOrigin(origin: string): void {
   Object.defineProperty(window, "location", {
@@ -35,7 +35,6 @@ describe("page-bound environment", () => {
       homeserver: "https://backend.example.test",
       serverName: "example.test",
     });
-    expect(runtimeOidcIssuer()).toBe("https://backend.example.test/");
   });
 
   it("rejects config from a different page origin", async () => {

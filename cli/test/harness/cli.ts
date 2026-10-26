@@ -3,7 +3,7 @@ import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { safeErrorMessage } from "../../src/output.js";
+import { safeDiagnosticText, safeErrorMessage } from "../../src/output.js";
 
 const REPO_ROOT = process.cwd();
 const TSX_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "tsx");
@@ -22,10 +22,20 @@ function minimalEnvironment(overrides: Record<string, string>): NodeJS.ProcessEn
   };
 }
 
-function sanitizeOutput(value: string): string {
+export function sanitizeOutput(value: string): string {
   return value
     .split(/\r?\n/u)
-    .map((line) => safeErrorMessage(line))
+    .map((line) => {
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return safeDiagnosticText(line);
+        }
+      } catch {
+        // Keep ordinary diagnostic lines on the existing text sanitizer.
+      }
+      return safeErrorMessage(line);
+    })
     .join("\n");
 }
 

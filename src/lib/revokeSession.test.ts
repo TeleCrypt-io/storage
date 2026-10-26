@@ -2,17 +2,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeSettings } from "./buildConfig";
 import { formatOperationError } from "./formatOperationError";
 import { discoverOidcIssuer } from "./core";
-import { clearPendingRevocation, loadPendingRevocations, savePendingRevocation, SESSION_STORAGE_KEY } from "./session";
+import * as core from "./core";
+import { beginOidcLogin } from "./oidcAuth";
+import { clearPendingRevocation, loadPendingRevocations, loadSession, savePendingRevocation, SESSION_STORAGE_KEY } from "./session";
 import { revokeOrRemember, revokeOidcSession } from "./revokeSession";
 
 const target = {
   homeserver: getRuntimeSettings().homeserver,
+  oidcIssuer: "https://auth.example.test/",
   accessToken: "access-token-secret",
   refreshToken: "refresh-token-secret",
   oidcClientId: "client-id",
 };
 
-const endpoint = `${target.homeserver}/oauth2/revoke`;
+const endpoint = `${target.oidcIssuer}oauth2/revoke`;
+const logoutEndpoint = new URL("_matrix/client/v3/logout", target.homeserver.endsWith("/")
+  ? target.homeserver
+  : `${target.homeserver}/`).toString();
+const metadataWithoutRevocation = {
+  issuer: target.oidcIssuer,
+  authorization_endpoint: `${target.oidcIssuer}oauth2/authorize`,
+  token_endpoint: `${target.oidcIssuer}oauth2/token`,
+  registration_endpoint: `${target.oidcIssuer}oauth2/register`,
+};
+const logoutMetadata = { ...metadataWithoutRevocation, token_endpoint: `${target.oidcIssuer}oauth2/token` };
 vi.mock("./core", async () => ({
   ...await vi.importActual<typeof import("./core")>("./core"),
   discoverOidcIssuer: vi.fn(),
@@ -31,10 +44,11 @@ function deferred<T>() {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(discoverOidcIssuer).mockResolvedValue({
-    issuer: `${target.homeserver}/`, revocation_endpoint: endpoint,
+    issuer: target.oidcIssuer, revocation_endpoint: endpoint,
   } as never);
   clearPendingRevocation();
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -63,6 +77,171 @@ describe("revokeOidcSession", () => {
     expect(Object.fromEntries(fetchMock.mock.calls[0][1]?.body as URLSearchParams)).toEqual({
       token: target.refreshToken, token_type_hint: "refresh_token", client_id: target.oidcClientId,
     });
+  });
+
+  it("uses the trusted homeserver logout endpoint when revocation metadata is absent", async () => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(metadataWithoutRevocation as never);
+    const response = new Response(null, { status: 204 });
+    Object.defineProperty(response, "url", { value: logoutEndpoint });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    await revokeOidcSession(target, fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      logoutEndpoint,
+      expect.objectContaining({
+        method: "POST",
+        headers: { Authorization: `Bearer ${target.accessToken}` },
+        credentials: "omit",
+        redirect: "manual",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it("refreshes only an unknown Matrix token and persists rotated credentials before confirmed logout", async () => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(logoutMetadata as never);
+    const session = {
+      ...target,
+      userId: "@alice:localhost:8008",
+      deviceId: "DEVICE1",
+    };
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    const rotated = {
+      accessToken: "refreshed-access-token",
+      refreshToken: "rotated-refresh-token",
+    };
+    const matrixResponse = (status: number, text = "") => {
+      const response = new Response(status === 204 ? null : text, { status });
+      Object.defineProperty(response, "url", { value: logoutEndpoint });
+      return response;
+    };
+    const tokenResponse = new Response(JSON.stringify({
+      access_token: rotated.accessToken,
+      refresh_token: rotated.refreshToken,
+    }), { status: 200 });
+    Object.defineProperty(tokenResponse, "url", { value: logoutMetadata.token_endpoint });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(matrixResponse(401, JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" })))
+      .mockResolvedValueOnce(tokenResponse)
+      .mockImplementationOnce(async () => {
+        expect(loadSession()).toMatchObject(rotated);
+        expect(loadPendingRevocations()).toEqual([{ ...target, ...rotated }]);
+        return matrixResponse(204);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(revokeOrRemember(target)).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(logoutMetadata.token_endpoint);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST", redirect: "manual", credentials: "omit" });
+    expect(Object.fromEntries(fetchMock.mock.calls[1]?.[1]?.body as URLSearchParams)).toEqual({
+      grant_type: "refresh_token",
+      refresh_token: target.refreshToken,
+      client_id: target.oidcClientId,
+    });
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({ Authorization: `Bearer ${rotated.accessToken}` });
+    expect(loadSession()).toBeNull();
+    expect(loadPendingRevocations()).toEqual([]);
+  });
+
+  it("retains rotated credentials after the second logout fails and retries with them", async () => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(logoutMetadata as never);
+    const session = {
+      ...target,
+      userId: "@alice:localhost:8008",
+      deviceId: "DEVICE1",
+    };
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    const rotated = {
+      accessToken: "refreshed-access-token",
+      refreshToken: "rotated-refresh-token",
+    };
+    const matrixResponse = (status: number, text = "") => {
+      const response = new Response(status === 204 ? null : text, { status });
+      Object.defineProperty(response, "url", { value: logoutEndpoint });
+      return response;
+    };
+    const tokenResponse = new Response(JSON.stringify({
+      access_token: rotated.accessToken,
+      refresh_token: rotated.refreshToken,
+    }), { status: 200 });
+    Object.defineProperty(tokenResponse, "url", { value: logoutMetadata.token_endpoint });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(matrixResponse(401, JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" })))
+      .mockResolvedValueOnce(tokenResponse)
+      .mockResolvedValueOnce(matrixResponse(503, "temporary logout outage"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await revokeOrRemember(target)).toBeInstanceOf(Error);
+    expect(loadSession()).toMatchObject(rotated);
+    expect(loadPendingRevocations()).toEqual([{ ...target, ...rotated }]);
+
+    fetchMock.mockResolvedValueOnce(matrixResponse(204));
+    await expect(revokeOrRemember(loadPendingRevocations()[0]!)).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]?.[1]?.headers).toEqual({ Authorization: `Bearer ${rotated.accessToken}` });
+    expect(loadSession()).toBeNull();
+    expect(loadPendingRevocations()).toEqual([]);
+  });
+
+  it.each([
+    { status: 401, body: { errcode: "M_FORBIDDEN" } },
+    { status: 500, body: { errcode: "M_UNKNOWN_TOKEN" } },
+  ])("does not refresh a non-trigger Matrix logout failure ($status)", async ({ status, body }) => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(logoutMetadata as never);
+    const response = new Response(JSON.stringify(body), { status });
+    Object.defineProperty(response, "url", { value: logoutEndpoint });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    await expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats only a terminal OAuth invalid_grant after unknown Matrix token as complete", async () => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(logoutMetadata as never);
+    const matrixResponse = new Response(JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" }), { status: 401 });
+    Object.defineProperty(matrixResponse, "url", { value: logoutEndpoint });
+    const grantResponse = new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    Object.defineProperty(grantResponse, "url", { value: logoutMetadata.token_endpoint });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(matrixResponse)
+      .mockResolvedValueOnce(grantResponse);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(revokeOrRemember(target)).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(loadPendingRevocations()).toEqual([]);
+  });
+
+  it("logs out before starting replacement login when optional revocation is absent", async () => {
+    vi.mocked(discoverOidcIssuer).mockResolvedValue(metadataWithoutRevocation as never);
+    const session = {
+      homeserver: target.homeserver,
+      userId: "@alice:localhost:8008",
+      deviceId: "DEVICE1",
+      oidcIssuer: target.oidcIssuer,
+      accessToken: target.accessToken,
+      refreshToken: target.refreshToken,
+      oidcClientId: target.oidcClientId,
+    };
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    localStorage.setItem(`telecrypt-io-ui:oidc-client:${target.oidcIssuer}`, target.oidcClientId);
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "url", { value: logoutEndpoint });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    vi.stubGlobal("fetch", fetchMock);
+    const startAuthorization = vi.spyOn(core, "beginAuthorizationCodeFlow")
+      .mockResolvedValue(`${metadataWithoutRevocation.authorization_endpoint}?state=replacement`);
+
+    await beginOidcLogin();
+
+    expect(fetchMock).toHaveBeenCalledWith(logoutEndpoint, expect.anything());
+    expect(startAuthorization).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(startAuthorization.mock.invocationCallOrder[0]!);
+    expect(sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(loadPendingRevocations()).toEqual([]);
   });
 
   it("retains a complete redacted HTTP failure body", async () => {
@@ -207,10 +386,9 @@ describe("revokeOidcSession", () => {
   );
   it.each([
     { issuer: "https://untrusted.example/", revocation_endpoint: endpoint },
-    { issuer: `${target.homeserver}/`, revocation_endpoint: "https://untrusted.example/revoke" },
-    { issuer: `${target.homeserver}/`, revocation_endpoint: `${endpoint}?redirect=elsewhere` },
-    { issuer: `${target.homeserver}/` },
-  ])("rejects untrusted or missing discovery before sending credentials", async (metadata) => {
+    { issuer: target.oidcIssuer, revocation_endpoint: "javascript:alert(1)" },
+    { issuer: target.oidcIssuer, revocation_endpoint: `${endpoint}?redirect=elsewhere` },
+  ])("rejects changed issuer or invalid revocation discovery before sending credentials", async (metadata) => {
     vi.mocked(discoverOidcIssuer).mockResolvedValue(metadata as never);
     const fetchMock = vi.fn<typeof fetch>();
     await expect(revokeOidcSession(target, fetchMock)).rejects.toMatchObject({ reason: "failed" });
@@ -273,6 +451,10 @@ describe("revokeOidcSession", () => {
 
   it("retains legacy credentials and explains missing client identity instead of claiming revocation", async () => {
     const pending = { homeserver: target.homeserver, accessToken: target.accessToken };
+    vi.mocked(discoverOidcIssuer).mockResolvedValue({
+      issuer: `${target.homeserver.replace(/\/+$/u, "")}/`,
+      revocation_endpoint: `${target.homeserver.replace(/\/+$/u, "")}/oauth2/revoke`,
+    } as never);
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
       ...target, accessToken: "unrelated", userId: "@alice:localhost:8008", deviceId: "DEVICE1",
     }));
@@ -280,7 +462,7 @@ describe("revokeOidcSession", () => {
     vi.stubGlobal("fetch", fetchMock);
     const failure = await revokeOrRemember(pending);
     expect(formatOperationError(failure)).toContain("original OAuth client ID is unavailable");
-    expect(loadPendingRevocations()).toEqual([pending]);
+    expect(loadPendingRevocations()).toEqual([{ ...pending, oidcIssuer: `${target.homeserver}/` }]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

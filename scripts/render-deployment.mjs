@@ -20,9 +20,7 @@ if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(serverName) || serverNam
   throw new Error("SERVER_NAME must be a public DNS Matrix server name");
 }
 
-const backendOrigin = `https://backend.${serverName}`;
 const publicAssetOrigin = publicAssets.origin;
-const matrixWellKnown = `https://${serverName}/.well-known/matrix/client`;
 const csp = [
   "default-src 'none'",
   "base-uri 'none'",
@@ -31,7 +29,9 @@ const csp = [
   `style-src 'self' ${publicAssetOrigin}`,
   `img-src 'self' ${publicAssetOrigin}`,
   "form-action 'self'",
-  `connect-src 'self' ${backendOrigin} ${matrixWellKnown}`,
+  // Matrix advertises OAuth endpoints at runtime, so the trusted homeserver
+  // and the separate OIDC issuer must both remain reachable.
+  "connect-src 'self' https:",
 ].join("; ");
 
 function replaceInFile(file, replacements) {

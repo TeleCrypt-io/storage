@@ -7,7 +7,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  assertOidcEndpoint,
   discoverOidcIssuer,
   registerClient,
   startDeviceCodeLogin,
@@ -15,8 +14,8 @@ import {
   isDeviceAccessTokenError,
   whoAmI,
   StorageError,
+  validateOidcEndpoint,
 } from "@telecrypt-io/storage/core";
-export { assertOidcEndpoint };
 import type { PendingSession, Session } from "./profile.js";
 import { settlePromiseWithin } from "./cancellation.js";
 import { expectedMatrixServerName, isTrustedHomeserverOrigin } from "./topology.js";
@@ -119,15 +118,6 @@ export function assertTrustedHomeserver(value: unknown, serverName?: unknown): s
   return value;
 }
 
-function assertSafeVerificationUri(
-  value: unknown,
-  trustedHomeserver: string,
-  name: string,
-  issuer: URL,
-): string {
-  return assertOidcEndpoint(value, trustedHomeserver, name, issuer, true);
-}
-
 /** Generates a device ID the same shape matrix-js-sdk itself would (short
  * uppercase alphanumeric) — this CLI process chooses it upfront (unlike the
  * UI's authorization-code flow, where the SDK picks a random one) so it's
@@ -193,10 +183,11 @@ export async function runDeviceCodeLogin(
     OIDC_REQUEST_TIMEOUT_MS,
     signal,
   );
-  const issuer = new URL(assertOidcEndpoint(discoveredMetadata.issuer, trustedHomeserver, "OIDC issuer"));
-  const oidcIssuer = issuer.toString();
-  const oidcTokenEndpoint = discoveredMetadata.token_endpoint;
-  const oidcRevocationEndpoint = discoveredMetadata.revocation_endpoint;
+  const oidcIssuer = validateOidcEndpoint(discoveredMetadata.issuer, "OIDC issuer");
+  const oidcTokenEndpoint = validateOidcEndpoint(discoveredMetadata.token_endpoint, "OIDC token endpoint");
+  const oidcRevocationEndpoint = discoveredMetadata.revocation_endpoint === undefined
+    ? undefined
+    : validateOidcEndpoint(discoveredMetadata.revocation_endpoint, "OIDC revocation endpoint");
 
   const clientId = await withDeadline(
     (requestSignal) => registerClient(discoveredMetadata, {
@@ -224,20 +215,8 @@ export async function runDeviceCodeLogin(
     signal,
   );
   if (signal?.aborted) throw new StorageError("OIDC operation cancelled");
-  const verificationUri = assertSafeVerificationUri(
-    session.verification_uri,
-    trustedHomeserver,
-    "OIDC verification URI",
-    issuer,
-  );
-  const verificationUriComplete = session.verification_uri_complete !== undefined
-    ? assertSafeVerificationUri(
-        session.verification_uri_complete,
-        trustedHomeserver,
-        "OIDC complete verification URI",
-        issuer,
-      )
-    : undefined;
+  const verificationUri = session.verification_uri;
+  const verificationUriComplete = session.verification_uri_complete;
   hooks.onVerification({
     verificationUri,
     verificationUriComplete,

@@ -73,32 +73,29 @@ describe("OIDC session refresh persistence", () => {
     expect(() => withRefreshedTokens(SESSION, { accessToken: "access-next", refreshToken: "bad refresh" })).toThrow(/invalid token/);
   });
 
-  it("lets the SDK reject a cross-origin refresh endpoint before storage starts", async () => {
+  it("accepts a cross-origin token endpoint advertised by OIDC metadata", async () => {
     const dir = fixtureDirectory("telecrypt-oidc-endpoint-test");
-    await expect(
-      initStorageForNewSession(
-        {
-          ...SESSION,
-          homeserver: "https://backend.telecrypt.io",
-          oidcTokenEndpoint: "https://evil.example/token",
-        },
-        dir,
-      ),
-    ).rejects.toThrow(/OIDC token endpoint/);
+    const opened = await initStorageForNewSession({
+      ...SESSION,
+      homeserver: "https://backend.telecrypt.io",
+      oidcTokenEndpoint: "https://accounts.example.test/token",
+    }, dir);
+    expect(opened.session.oidcTokenEndpoint).toBe("https://accounts.example.test/token");
+    await opened.close();
   });
 
-  it("releases its owned profile fence when new-session initialization fails", async () => {
+  it("releases its owned profile fence when new-session endpoint validation fails", async () => {
     const dir = fixtureDirectory("telecrypt-init-failure-lock");
     await expect(
       initStorageForNewSession(
         {
           ...SESSION,
           homeserver: "https://backend.telecrypt.io",
-          oidcTokenEndpoint: "https://evil.example/token",
+          oidcTokenEndpoint: "http://accounts.example.test/token",
         },
         dir,
       ),
-    ).rejects.toThrow(/OIDC token endpoint/);
+    ).rejects.toThrow(/invalid token endpoint/);
     const lock = acquireProfileLock(dir);
     lock.release();
   });

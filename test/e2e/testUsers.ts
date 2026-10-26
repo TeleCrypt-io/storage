@@ -19,7 +19,6 @@ import {
 const execFileAsync = promisify(execFile);
 const HOMESERVER = "http://localhost:8008";
 const SERVER_NAME = "localhost:8008";
-const MAS_BASE = new URL(`${HOMESERVER}/`);
 const PROVISIONING_RETRIES = 3;
 const PROVISIONING_RETRY_DELAY_MS = 300;
 
@@ -152,12 +151,12 @@ function extractFormAction(html: string, fallback: URL): string {
   return new URL(action || fallback.toString(), fallback).toString();
 }
 
-function localMasUrl(location: string): URL {
-  const url = new URL(location, MAS_BASE);
-  if (url.origin !== MAS_BASE.origin || url.username || url.password) {
+function localMasUrl(location: string, masBase: URL): URL {
+  const url = new URL(location, masBase);
+  if (url.origin !== masBase.origin || url.username || url.password) {
     throw new Error(`OIDC approval: refusing non-local MAS URL ${location}`);
   }
-  if (!url.pathname.startsWith(MAS_BASE.pathname)) {
+  if (!url.pathname.startsWith(masBase.pathname)) {
     throw new Error(`OIDC approval: refusing non-MAS URL ${location}`);
   }
   return url;
@@ -165,6 +164,8 @@ function localMasUrl(location: string): URL {
 
 class CookieJar {
   private readonly cookies = new Map<string, string>();
+
+  constructor(private readonly masBase: URL) {}
 
   private update(response: Response): void {
     for (const cookie of response.headers.getSetCookie?.() ?? []) {
@@ -180,7 +181,7 @@ class CookieJar {
   }
 
   async get(location: string): Promise<Response> {
-    const response = await fetch(localMasUrl(location), {
+    const response = await fetch(localMasUrl(location, this.masBase), {
       headers: { Cookie: this.header() },
       redirect: "manual",
     });
@@ -189,7 +190,7 @@ class CookieJar {
   }
 
   async post(location: string, fields: Record<string, string>): Promise<Response> {
-    const response = await fetch(localMasUrl(location), {
+    const response = await fetch(localMasUrl(location, this.masBase), {
       method: "POST",
       headers: {
         Cookie: this.header(),
@@ -218,9 +219,9 @@ class CookieJar {
  * forms. This is test infrastructure only; the password is sent to MAS's
  * OIDC page, never to a Matrix login endpoint or to the Storage application.
  */
-async function approveDeviceCode(username: string, password: string, userCode: string): Promise<void> {
-  const jar = new CookieJar();
-  const loginUrl = new URL("login", MAS_BASE);
+async function approveDeviceCode(username: string, password: string, userCode: string, masBase: URL): Promise<void> {
+  const jar = new CookieJar(masBase);
+  const loginUrl = new URL("login", masBase);
 
   let response = await jar.get(loginUrl.toString());
   let csrf = extractCsrf(await response.text());
@@ -230,7 +231,7 @@ async function approveDeviceCode(username: string, password: string, userCode: s
   }
   await jar.follow(response);
 
-  const linkUrl = new URL("link", MAS_BASE);
+  const linkUrl = new URL("link", masBase);
   response = await jar.get(linkUrl.toString());
   const linkHtml = await response.text();
   if (response.status !== 200) {
@@ -282,7 +283,7 @@ async function loginViaDeviceCode(
   const session = await startDeviceCodeLogin(authMetadata, clientId, deviceId);
   const [result] = await Promise.all([
     waitForDeviceCodeLogin(authMetadata, clientId, session),
-    approveDeviceCode(username, password, session.user_code),
+    approveDeviceCode(username, password, session.user_code, new URL(authMetadata.issuer)),
   ]);
   if (isDeviceAccessTokenError(result)) {
     throw new Error(`device-code login failed (${result.error}): ${result.error_description ?? "no description"}`);

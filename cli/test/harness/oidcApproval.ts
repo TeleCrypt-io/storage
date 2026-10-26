@@ -2,13 +2,14 @@ import {
   readReadableStreamChunkWithAbort,
 } from "../../src/cancellation.js";
 import { safeErrorMessage } from "../../src/output.js";
+import { discoverOidcIssuer } from "@telecrypt-io/storage/core";
 
 /**
  * Approves a device grant against the disposable local MAS through its real
  * browser-facing forms. This is test infrastructure only: the password is used
  * solely to approve MAS OAuth, never by the product CLI's login flow.
  */
-const MAS_BASE = new URL("http://localhost:8008/");
+const HOMESERVER = "http://localhost:8008";
 const APPROVAL_TIMEOUT_MS = 15_000;
 
 function cancellationError(): Error {
@@ -40,9 +41,9 @@ async function fetchWithinApprovalBound(
   }
 }
 
-function localMasUrl(location: string): URL {
-  const url = new URL(location, MAS_BASE);
-  if (url.origin !== MAS_BASE.origin || url.username || url.password) {
+function localMasUrl(location: string, masBase: URL): URL {
+  const url = new URL(location, masBase);
+  if (url.origin !== masBase.origin || url.username || url.password) {
     throw new Error(`approveDeviceCode: refusing non-local MAS URL ${location}`);
   }
   return url;
@@ -69,8 +70,10 @@ function extractFormAction(html: string, fallback: URL): string {
 class CookieJar {
   private readonly cookies = new Map<string, string>();
   private readonly signal: AbortSignal;
+  private readonly masBase: URL;
 
-  constructor(signal: AbortSignal) {
+  constructor(masBase: URL, signal: AbortSignal) {
+    this.masBase = masBase;
     this.signal = signal;
   }
 
@@ -96,7 +99,7 @@ class CookieJar {
   }
 
   async get(location: string): Promise<Response> {
-    const response = await fetchWithinApprovalBound(localMasUrl(location), {
+    const response = await fetchWithinApprovalBound(localMasUrl(location, this.masBase), {
       headers: { Cookie: this.header() },
       redirect: "manual",
       signal: this.signal,
@@ -106,7 +109,7 @@ class CookieJar {
   }
 
   async post(location: string, fields: Record<string, string>): Promise<Response> {
-    const response = await fetchWithinApprovalBound(localMasUrl(location), {
+    const response = await fetchWithinApprovalBound(localMasUrl(location, this.masBase), {
       method: "POST",
       headers: {
         Cookie: this.header(),
@@ -180,18 +183,20 @@ export async function approveDeviceCodeViaHttp(
   const timeoutController = new AbortController();
   const timeout = setTimeout(() => timeoutController.abort(cancellationError()), APPROVAL_TIMEOUT_MS);
   const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutController.signal]) : timeoutController.signal;
-  const jar = new CookieJar(signal);
   try {
-    let response = await jar.get(new URL("login", MAS_BASE).toString());
+    const metadata = await discoverOidcIssuer(HOMESERVER, signal);
+    const masBase = new URL(metadata.issuer);
+    const jar = new CookieJar(masBase, signal);
+    let response = await jar.get(new URL("login", masBase).toString());
     let csrf = extractCsrf(await readHtml(response, signal, [username, password, userCode]));
-    response = await jar.post(new URL("login", MAS_BASE).toString(), { csrf, username, password });
+    response = await jar.post(new URL("login", masBase).toString(), { csrf, username, password });
     if (response.status !== 303) {
       const redactions = [username, password, userCode, csrf];
       throw new Error(`approveDeviceCode: login did not redirect (${response.status}): ${htmlDiagnostic(await readHtml(response, signal, redactions), redactions)}`);
     }
     await jar.follow(response);
 
-    const linkUrl = new URL("link", MAS_BASE);
+    const linkUrl = new URL("link", masBase);
     response = await jar.get(linkUrl.toString());
     const linkHtml = await readHtml(response, signal, [username, password, userCode, csrf]);
     if (response.status !== 200) {

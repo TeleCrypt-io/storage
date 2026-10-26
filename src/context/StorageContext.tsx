@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { TeleCryptIOStorage } from "@telecrypt-io/storage";
-import { assertRuntimeOidcEndpoint, getRuntimeSettings, runtimeOidcIssuer } from "../lib/buildConfig";
+import { getRuntimeSettings } from "../lib/buildConfig";
 import {
   clearOidcTransientState,
   clearSession,
@@ -224,10 +224,10 @@ export function StorageProvider({ children }: { children: ReactNode }) {
             const core = await import("../lib/core");
             const { homeserver, serverName } = getRuntimeSettings();
             const authMetadata = await core.discoverOidcIssuer(homeserver, abortController.signal);
-            if (authMetadata.issuer !== runtimeOidcIssuer()) {
+            if (core.validateOidcEndpoint(authMetadata.issuer, "OIDC issuer") !== s.oidcIssuer) {
               throw new Error("Authentication issuer changed; log in again");
             }
-            assertRuntimeOidcEndpoint(
+            core.validateOidcEndpoint(
               authMetadata.token_endpoint,
               "OIDC token endpoint",
             );
@@ -669,7 +669,9 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         let recorded = false;
         let persistenceError: unknown;
         try {
-          recorded = savePendingRevocation(current);
+          const latest = loadSession();
+          const retryTarget = latest && sameSessionIdentity(latest, target) ? latest : current;
+          recorded = savePendingRevocation(retryTarget);
         } catch (saveError) {
           persistenceError = saveError;
         }
