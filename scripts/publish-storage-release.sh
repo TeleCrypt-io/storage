@@ -71,7 +71,7 @@ for file in index.html _headers config.json; do
 done
 public_assets_origin="$(jq -er '.origin' "$source_checkout/public-assets.json")"
 for file in index.html _headers; do
-  grep -Fq "https://backend.$server_name" "$dist/$file"
+  grep -Fq "connect-src 'self' https:" "$dist/$file"
   grep -Fq "$public_assets_origin" "$dist/$file"
 done
 grep -Fq 'Content-Security-Policy' "$dist/index.html"
