@@ -210,6 +210,9 @@ describe("CLI", () => {
 
   it("logout exits nonzero and retains the profile when server revocation fails", async () => {
     const dir = freshProfileDir("logout-failure");
+    await registerProfile(dir, "logout-failure");
+    const originalSession = readSession(dir);
+    if (!originalSession) throw new Error("registered session missing");
     const server = createServer((_request, response) => {
       response.writeHead(503);
       response.end();
@@ -221,19 +224,8 @@ describe("CLI", () => {
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("test server did not expose a port");
-      const session: Session = {
-        homeserver: `http://127.0.0.1:${address.port}`,
-        userId: "@logout:localhost:8008",
-        matrixServerName: "localhost:8008",
-        deviceId: "LOGOUTDEVICE",
-        accessToken: "logout-access-token",
-        oidcIssuer: `http://127.0.0.1:${address.port}/`,
-        refreshToken: "logout-refresh-token",
-        oidcClientId: "logout-client",
-        oidcTokenEndpoint: `http://127.0.0.1:${address.port}/oauth2/token`,
-        oidcRevocationEndpoint: `http://127.0.0.1:${address.port}/oauth2/revoke`,
-      };
-    writeSession(session, dir);
+      const session: Session = { ...originalSession, oidcRevocationEndpoint: `http://127.0.0.1:${address.port}/oauth2/revoke` };
+      writeSession(session, dir);
 
       const result = await cliJson(["storage", "logout"], {
         TELECRYPT_IO_STORAGE_HOME: dir,
@@ -245,12 +237,14 @@ describe("CLI", () => {
       });
       expect(result.stderr).not.toContain(session.accessToken);
       expect(fs.existsSync(sessionPath(dir))).toBe(true);
+      writeSession(originalSession, dir);
+      expect((await cliJson(["storage", "logout"], { TELECRYPT_IO_STORAGE_HOME: dir })).code).toBe(0);
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
     }
-  });
+  }, 120000);
 
   it(
     "CLI.1 cross-process persistence: upload in one process, download in a separate one, byte-identical",
