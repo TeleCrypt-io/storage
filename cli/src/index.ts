@@ -94,7 +94,8 @@ async function withBackedUpMutation<T extends { id: string }>(
     try {
       for (const target of error.backupTargets) {
         await opened.run(
-          (signal) => opened.storage.waitForKeyBackup(target.treeId, target.fileId, { signal }),
+          (signal) => opened.storage.waitForKeyBackup(target.treeId, target.fileId,
+            { signal, ...(target.metadataEventId ? { metadataEventId: target.metadataEventId } : {}) }),
           "key backup settlement",
           25_000,
         );

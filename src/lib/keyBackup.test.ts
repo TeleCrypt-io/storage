@@ -139,11 +139,11 @@ describe("browser write and logout backup settlement", () => {
     const { storage, waitForKeyBackup } = fixture();
     const rename = vi.fn().mockRejectedValue(new MutationPartialError(
       "rename file", ["$metadata"], "readback failed",
-      { treeId: "!vault", backupTargets: [{ treeId: "!vault", fileId: "$file" }] },
+      { treeId: "!vault", backupTargets: [{ treeId: "!vault", fileId: "$file", metadataEventId: "$metadata" }] },
     ));
     waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
     await expect(backedUp(rename, "file rename", () => "!vault")(storage)).rejects.toMatchObject({
-      operation: "rename file", backupTargets: [{ treeId: "!vault", fileId: "$file" }],
+      operation: "rename file", backupTargets: [{ treeId: "!vault", fileId: "$file", metadataEventId: "$metadata" }],
     });
     stopBackupTracking(storage);
     const reloaded = fixture();
@@ -151,6 +151,7 @@ describe("browser write and logout backup settlement", () => {
     await expect(settleKeyBackupBeforeLogout(reloaded.storage)).rejects.toThrow("Keep this tab open");
     reloaded.waitForKeyBackup.mockResolvedValueOnce("deleted");
     await settleKeyBackupBeforeLogout(reloaded.storage);
+    expect(reloaded.waitForKeyBackup).toHaveBeenCalledWith("!vault", "$file", { metadataEventId: "$metadata" });
     expect(rename).toHaveBeenCalledTimes(1);
     expect(reloaded.waitForKeyBackup).toHaveBeenCalledTimes(2);
     expect(sessionStorage.length).toBe(0);

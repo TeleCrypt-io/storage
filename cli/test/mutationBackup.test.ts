@@ -200,6 +200,22 @@ describe("encrypted mutations and backup settlement", () => {
     expect(mocks.uploadFile).toHaveBeenCalledTimes(1);
   });
 
+  it("settles the exact acknowledged rename metadata without repeating the rename", async () => {
+    const treeId = "!vault:example.test";
+    const fileId = "$attachment";
+    const metadataEventId = "$metadata";
+    mocks.renameFile.mockRejectedValue(new MutationPartialError("rename file", [metadataEventId], "pointer failed", {
+      treeId, backupTargets: [{ treeId, fileId, metadataEventId }],
+    }));
+    mocks.waitForKeyBackup.mockResolvedValue("backed_up");
+    await main(["node", "telecrypt-io", "storage", "file", "rename", treeId, fileId, "new.txt", "--json"]);
+    expect(process.exitCode).toBe(1);
+    expect(mocks.waitForKeyBackup).toHaveBeenCalledWith(treeId, fileId, {
+      signal: expect.any(AbortSignal), metadataEventId,
+    });
+    expect(mocks.renameFile).toHaveBeenCalledTimes(1);
+  });
+
   it.each([undefined, "$attachment"])("cleans up acknowledged upload IDs with event %s", async (fileId) => {
     const treeId = "!vault:example.test";
     const mediaId = "mxc://example.test/uploaded";

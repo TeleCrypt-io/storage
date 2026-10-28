@@ -1,6 +1,6 @@
 import { MutationPartialError, StorageError, type TeleCryptIOStorage } from "@telecrypt-io/storage";
 
-interface Target { treeId: string; fileId?: string }
+interface Target { treeId: string; fileId?: string; metadataEventId?: string }
 interface PendingBackup {
   key: string;
   targets: Map<string, Target>;
@@ -9,7 +9,7 @@ interface PendingBackup {
   beforeUnload: (event: BeforeUnloadEvent) => void;
 }
 const pending = new WeakMap<TeleCryptIOStorage, PendingBackup>();
-const targetKey = (target: Target) => JSON.stringify([target.treeId, target.fileId]);
+const targetKey = (target: Target) => JSON.stringify([target.treeId, target.fileId, target.metadataEventId]);
 
 function state(storage: TeleCryptIOStorage): PendingBackup {
   const existing = pending.get(storage);
@@ -44,7 +44,9 @@ function persist(value: PendingBackup) {
 }
 
 async function settle(storage: TeleCryptIOStorage, value: PendingBackup, target: Target) {
-  const result = await storage.waitForKeyBackup(target.treeId, target.fileId);
+  const result = target.metadataEventId
+    ? await storage.waitForKeyBackup(target.treeId, target.fileId, { metadataEventId: target.metadataEventId })
+    : await storage.waitForKeyBackup(target.treeId, target.fileId);
   if (result !== "backed_up" && result !== "deleted") {
     throw new StorageError("key backup target has not settled");
   }
@@ -128,7 +130,9 @@ export async function settleKeyBackupBeforeLogout(storage: TeleCryptIOStorage): 
 
 export function forgetDeletedBackup(storage: TeleCryptIOStorage, treeId: string, fileId?: string): void {
   const value = state(storage);
-  value.targets.delete(targetKey({ treeId, fileId }));
+  for (const [key, target] of value.targets) {
+    if (target.treeId === treeId && target.fileId === fileId) value.targets.delete(key);
+  }
   persist(value);
 }
 
