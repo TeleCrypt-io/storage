@@ -135,6 +135,27 @@ describe("browser write and logout backup settlement", () => {
     expect(sessionStorage.length).toBe(0);
   });
 
+  it("retains a partial rename across reload and accepts confirmed deletion on logout retry", async () => {
+    const { storage, waitForKeyBackup } = fixture();
+    const rename = vi.fn().mockRejectedValue(new MutationPartialError(
+      "rename file", ["$metadata"], "readback failed",
+      { treeId: "!vault", backupTargets: [{ treeId: "!vault", fileId: "$file" }] },
+    ));
+    waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
+    await expect(backedUp(rename, "file rename", () => "!vault")(storage)).rejects.toMatchObject({
+      operation: "rename file", backupTargets: [{ treeId: "!vault", fileId: "$file" }],
+    });
+    stopBackupTracking(storage);
+    const reloaded = fixture();
+    reloaded.waitForKeyBackup.mockRejectedValueOnce(new Error("still unavailable"));
+    await expect(settleKeyBackupBeforeLogout(reloaded.storage)).rejects.toThrow("Keep this tab open");
+    reloaded.waitForKeyBackup.mockResolvedValueOnce("deleted");
+    await settleKeyBackupBeforeLogout(reloaded.storage);
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(reloaded.waitForKeyBackup).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.length).toBe(0);
+  });
+
   it("does not apply another device's pending backup to this logout", async () => {
     const { storage, waitForKeyBackup } = fixture("FIRST");
     waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
