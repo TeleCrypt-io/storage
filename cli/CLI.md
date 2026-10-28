@@ -70,8 +70,8 @@ telecrypt-io storage logout
 Login opens the verification page through the system browser by default. Use `--no-browser` on
 headless or remotely operated machines; the verification URL and code are still printed.
 
-Logout revokes the server session before removing local credentials. If the server cannot be
-reached or rejects the request, the profile is retained so logout can be retried.
+Logout first settles pending encryption key backup, then revokes the server session before removing
+local credentials. If backup or revocation fails, the profile is retained so logout can be retried.
 
 ### Decryption Key Safe
 
@@ -124,7 +124,9 @@ operation; clients read native Matrix capabilities for action availability and M
 an action is attempted. File deletion also requires original uploader ownership and native
 redaction permission; the default Viewer settings do not allow redaction, though a custom Matrix
 configuration may. Changing a role applies to the vault and its existing folders. New folders
-inherit current parent access. Matrix can deny changes to or removal of Owners, including at a
+inherit current parent access. Unshare bans the person from the selected vault or folder and its
+descendants until an explicit share restores access; previously delivered keys cannot be revoked.
+Matrix can deny changes to or removal of Owners, including at a
 descendant, leaving a partial result that identifies completed rooms. The `subfolder` commands
 manage nested directory nodes within a vault.
 
