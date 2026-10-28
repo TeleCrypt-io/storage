@@ -36,6 +36,7 @@ export interface OpenedStorage {
     timeoutMs?: number,
     options?: { settleAfterCancellation?: boolean },
   ) => Promise<T>;
+  persist: () => Promise<void>;
   /** Persists the crypto store back to disk and stops the client. Call this
    * in a `finally` block around every command that opens storage, so the
    * next CLI invocation sees whatever this one learned (new megolm sessions,
@@ -427,7 +428,7 @@ function createOpenedStorage(
     if (failures.length > 1) throw new AggregateError(failures, "storage cleanup failed");
   };
 
-  return { storage, session, run, close };
+  return { storage, session, run, close, persist: () => persistCryptoStoreBounded(snapshotPath, lock) };
 }
 
 /**
@@ -439,20 +440,25 @@ export async function openStorage(
   dir: string = profileDir(),
   signal: AbortSignal = commandSignal,
   startClient = true,
+  heldLock?: ProfileLock,
 ): Promise<OpenedStorage> {
-  const lock = acquireProfileLock(dir);
+  const lock = heldLock ?? acquireProfileLock(dir);
+  const ownsLock = !heldLock;
+  const fail = (error: unknown): never => {
+    if (ownsLock) throwWithLockReleaseFailure(lock, error);
+    throw error;
+  };
   if (signal.aborted) {
-    throwWithLockReleaseFailure(lock, new StorageError("operation cancelled"));
+    fail(new StorageError("operation cancelled"));
   }
   let session: Session | null = null;
   try {
     session = readSession(dir, lock);
   } catch (error) {
-    throwWithLockReleaseFailure(lock, error);
+    fail(error);
   }
   if (!session) {
-    throwWithLockReleaseFailure(
-      lock,
+    return fail(
       new StorageError("not logged in — run `telecrypt-io storage login` first"),
     );
   }
@@ -478,10 +484,10 @@ export async function openStorage(
     );
   } catch (error) {
     refreshState.active = false;
-    throwWithLockReleaseFailure(lock, error);
+    fail(error);
   }
 
-  return createOpenedStorage(storage, session, dir, lock, true, refreshState, signal);
+  return createOpenedStorage(storage, session, dir, lock, ownsLock, refreshState, signal);
 }
 
 /**

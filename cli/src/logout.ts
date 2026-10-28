@@ -22,6 +22,7 @@ import type { ProfileLock } from "./profile.js";
 import { assertTrustedHomeserver } from "./oidc.js";
 import { commandSignal } from "./cancellation.js";
 import { safeDiagnosticText } from "./output.js";
+import { openStorage, waitForBackupSettled } from "./storage.js";
 
 const DEFAULT_LOGOUT_TIMEOUT_MS = 10_000;
 
@@ -364,6 +365,31 @@ export async function logoutProfile(
     }
     const revocable = session ?? pending;
     if (revocable && !remoteAlreadyRevoked) {
+      if (session) {
+        const opened = await openStorage(dir, signal, true, lock);
+        let backupError: unknown;
+        try {
+          await opened.run(async (operationSignal) => {
+            const status = await opened.storage.keySafe.getStatus(operationSignal);
+            if (status.state === "setup-required") return;
+            if (status.state !== "ready") {
+              throw new StorageError("complete or unlock the Decryption Key Safe before logout");
+            }
+            await waitForBackupSettled(opened.storage, undefined, operationSignal);
+          },
+            "key backup settlement",
+          );
+        } catch (error) {
+          backupError = error;
+        }
+        try {
+          await opened.close();
+        } catch (error) {
+          if (backupError) throw new AggregateError([backupError, error], "key backup and profile cleanup failed; retry logout");
+          throw error;
+        }
+        if (backupError) throw new StorageError("key backup did not settle; keep this profile and retry logout", { cause: backupError });
+      }
       await requestServerLogout(
         revocable,
         DEFAULT_LOGOUT_TIMEOUT_MS,

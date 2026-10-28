@@ -81,10 +81,16 @@ async function withBackedUpMutation<T extends { id: string }>(
 ): Promise<T> {
   let result: T;
   try {
-    result = await opened.run(operation, label, undefined,
-      label === "file upload" ? { settleAfterCancellation: true } : undefined);
+    result = await opened.run(operation, label, undefined, { settleAfterCancellation: true });
   } catch (error) {
     if (!(error instanceof core.MutationPartialError) || error.backupTargets.length === 0) throw error;
+    try {
+      await opened.persist();
+    } catch (persistenceError) {
+      throw new core.MutationPartialError(error.operation, error.completedIds,
+        "the encrypted change was accepted but its local crypto state could not be saved",
+        { cause: new AggregateError([error, persistenceError]), treeId: error.treeId, backupTargets: error.backupTargets });
+    }
     try {
       for (const target of error.backupTargets) {
         await opened.run(
@@ -106,6 +112,14 @@ async function withBackedUpMutation<T extends { id: string }>(
       );
     }
     throw error;
+  }
+  try {
+    await opened.persist();
+  } catch (error) {
+    throw new core.MutationPartialError(label, [result.id],
+      "the mutation committed but its local crypto state could not be saved",
+      { cause: error, treeId: fileTreeId ?? result.id,
+        backupTargets: [{ treeId: fileTreeId ?? result.id, ...(fileTreeId ? { fileId: result.id } : {}) }] });
   }
   try {
     const settlement = await opened.run(
