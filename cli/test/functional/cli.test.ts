@@ -451,6 +451,55 @@ describe("CLI", () => {
   );
 
   it(
+    "backs up the exact acknowledged rename metadata after its listing fails",
+    async () => {
+      const firstDir = freshProfileDir("rename-pointer-first");
+      const firstEnv = { TELECRYPT_IO_STORAGE_HOME: firstDir };
+      const user = await registerProfile(firstDir, "rename-pointer");
+      const created = await cliJson(["storage", "vault", "create", "Pointer vault"], firstEnv);
+      expect(created.code).toBe(0);
+      const vaultId = created.json.id as string;
+      const source = artifactPath("pointer.txt");
+      fs.writeFileSync(source, "retained content");
+      const uploaded = await cliJson(["storage", "file", "upload", vaultId, source], firstEnv);
+      expect(uploaded.code).toBe(0);
+      const fileId = uploaded.json.id as string;
+
+      const secondDir = freshProfileDir("rename-pointer-second");
+      const secondEnv = { TELECRYPT_IO_STORAGE_HOME: secondDir };
+      markProfileForRemoteCleanup(secondDir);
+      await loginProfile(secondDir, user);
+      const restored = await cliJson(["storage", "key-safe", "restore", "--key-stdin"], secondEnv, { stdin: user.recoveryKey });
+      expect(restored.code).toBe(0);
+      const module = fileURLToPath(new URL("../harness/renamePointerOutage.mjs", import.meta.url));
+      const rename = await cliJson(["storage", "file", "rename", vaultId, fileId, "new-name.txt"], {
+        ...secondEnv, NODE_OPTIONS: `--import=${module}`,
+      });
+      expect(rename.code).not.toBe(0);
+      expect(rename.json).toMatchObject({ code: "MUTATION_PARTIAL", backupTargets: [
+        { treeId: vaultId, fileId, metadataEventId: expect.any(String) },
+      ] });
+      const target = (rename.json.backupTargets as Array<{ metadataEventId: string }>)[0]!;
+      const session = JSON.parse(fs.readFileSync(sessionPath(secondDir), "utf8")) as Session;
+      const headers = { Authorization: `Bearer ${session.accessToken}` };
+      const event = await fetch(`${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(vaultId)}/event/${encodeURIComponent(target.metadataEventId)}`, { headers });
+      expect(event.status).toBe(200);
+      const eventBody = await event.json() as { content: { session_id: string } };
+      const versionResponse = await fetch(`${HOMESERVER}/_matrix/client/v3/room_keys/version`, { headers });
+      const version = (await versionResponse.json() as { version: string }).version;
+      const backupUrl = `${HOMESERVER}/_matrix/client/v3/room_keys/keys/${encodeURIComponent(vaultId)}/${encodeURIComponent(eventBody.content.session_id)}?version=${encodeURIComponent(version)}`;
+      expect((await fetch(backupUrl, { headers })).status).toBe(404);
+      const retry = await cliJson(["storage", "key-safe", "setup"], secondEnv);
+      expect(retry.code).toBe(0);
+      expect((await fetch(backupUrl, { headers })).status).toBe(200);
+      expect((await cliJson(["storage", "logout"], secondEnv)).code).toBe(0);
+      expect((await cliJson(["storage", "file", "delete", vaultId, fileId], firstEnv)).code).toBe(0);
+      expect((await cliJson(["storage", "vault", "delete", vaultId], firstEnv)).code).toBe(0);
+    },
+    180000,
+  );
+
+  it(
     "backs up metadata, recovers a committed creation after an outage, and restores names on a fresh login",
     async () => {
       const originalDir = freshProfileDir("metadata-backup");

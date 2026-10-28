@@ -2,7 +2,7 @@ import { test, expect, type BrowserContext } from "@playwright/test";
 import { registerE2eUser } from "./testUsers";
 import { loginViaUI, createVault, openVaultByName, uploadFile, restoreRecoveryKey } from "./uiHelpers";
 
-test("preserves a committed rename through failed backup, reload and logout retry", async ({ browser }) => {
+for (const failure of ["readback", "pointer"] as const) test(`preserves rename metadata after ${failure} failure through reload and logout retry`, async ({ browser }) => {
   test.setTimeout(300000);
   const user = await registerE2eUser("rename_backup");
   const contexts: BrowserContext[] = [];
@@ -31,8 +31,13 @@ test("preserves a committed rename through failed backup, reload and logout retr
       const url = new URL(route.request().url());
       if (route.request().method() === "PUT" && /\/state\/(?:org\.matrix\.msc3089\.branch|m\.branch)\//.test(url.pathname)) {
         listingWrites++;
-        const response = await route.fetch();
-        await route.fulfill({ response });
+        if (failure === "pointer") {
+          readbackFailed = true;
+          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ errcode: "M_UNKNOWN", error: "controlled pointer failure" }) });
+        } else {
+          const response = await route.fetch();
+          await route.fulfill({ response });
+        }
       } else if (listingWrites && !readbackFailed && route.request().method() === "GET" && url.pathname.includes("/event/")) {
         readbackFailed = true;
         await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ errcode: "M_UNKNOWN", error: "controlled readback failure" }) });
@@ -49,6 +54,21 @@ test("preserves a committed rename through failed backup, reload and logout retr
     await expect(page.getByTestId("vault-detail-error")).toContainText("Do not repeat", { timeout: 60000 });
     expect(readbackFailed).toBe(true);
     expect(listingWrites).toBe(1);
+    const retained = await page.evaluate(() => {
+      const key = Object.keys(sessionStorage).find((entry) => entry.startsWith("telecrypt-io-ui:pending-key-backups:"));
+      const session = JSON.parse(sessionStorage.getItem("telecrypt-io-ui:session")!);
+      return { targets: JSON.parse(sessionStorage.getItem(key!)!), token: session.accessToken as string };
+    });
+    const target = retained.targets[0] as { treeId: string; metadataEventId: string };
+    expect(target.metadataEventId).toBeTruthy();
+    const headers = { Authorization: `Bearer ${retained.token}` };
+    const eventResponse = await page.request.get(`http://localhost:8008/_matrix/client/v3/rooms/${encodeURIComponent(target.treeId)}/event/${encodeURIComponent(target.metadataEventId)}`, { headers });
+    expect(eventResponse.ok()).toBe(true);
+    const event = await eventResponse.json() as { content: { session_id: string } };
+    const versionResponse = await page.request.get("http://localhost:8008/_matrix/client/v3/room_keys/version", { headers });
+    const version = (await versionResponse.json() as { version: string }).version;
+    const backupUrl = `http://localhost:8008/_matrix/client/v3/room_keys/keys/${encodeURIComponent(target.treeId)}/${encodeURIComponent(event.content.session_id)}?version=${encodeURIComponent(version)}`;
+    expect((await page.request.get(backupUrl, { headers })).status()).toBe(404);
     page.on("dialog", (dialog) => dialog.accept());
     await page.reload();
     await expect(page.getByTestId("current-user")).toBeVisible({ timeout: 60000 });
@@ -62,9 +82,11 @@ test("preserves a committed rename through failed backup, reload and logout retr
     const recovered = await newPage();
     await loginViaUI(recovered, user, { deferKeySafe: true });
     await restoreRecoveryKey(recovered, recoveryKey!);
+    const recoveredToken = await recovered.evaluate(() => JSON.parse(sessionStorage.getItem("telecrypt-io-ui:session")!).accessToken as string);
+    expect((await recovered.request.get(backupUrl, { headers: { Authorization: `Bearer ${recoveredToken}` } })).status()).toBe(200);
     await recovered.getByTestId("nav-vaults").click();
     await openVaultByName(recovered, "Rename recovery");
-    const renamed = recovered.locator('[data-testid="file-item"]', { hasText: "after.txt" });
+    const renamed = recovered.locator('[data-testid="file-item"]', { hasText: failure === "pointer" ? "before.txt" : "after.txt" });
     await expect(renamed).toBeVisible();
     recovered.once("dialog", (dialog) => dialog.accept());
     await renamed.getByTestId("delete-file").click();
