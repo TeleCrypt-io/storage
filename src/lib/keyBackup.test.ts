@@ -157,6 +157,21 @@ describe("browser write and logout backup settlement", () => {
     expect(sessionStorage.length).toBe(0);
   });
 
+  it("retains the exact target from a successful rename across a failed backup and reload", async () => {
+    const { storage, waitForKeyBackup } = fixture();
+    const target = { treeId: "!vault", fileId: "$file", metadataEventId: "$first-name" };
+    const rename = vi.fn().mockResolvedValue({ id: "$file", name: "first", backupTarget: target });
+    waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
+    await expect(backedUp(rename, "file rename", () => "!vault")(storage)).rejects.toMatchObject({
+      backupTargets: [target],
+    });
+    stopBackupTracking(storage);
+    const reloaded = fixture();
+    await settleKeyBackupBeforeLogout(reloaded.storage);
+    expect(reloaded.waitForKeyBackup).toHaveBeenCalledWith("!vault", "$file", { metadataEventId: "$first-name" });
+    expect(rename).toHaveBeenCalledTimes(1);
+  });
+
   it("does not apply another device's pending backup to this logout", async () => {
     const { storage, waitForKeyBackup } = fixture("FIRST");
     waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));

@@ -55,7 +55,7 @@ async function settle(storage: TeleCryptIOStorage, value: PendingBackup, target:
 }
 
 /** Keep the committed result separate from backup failure; never repeat the write. */
-export function backedUp<Args extends unknown[], Result extends { id: string }>(
+export function backedUp<Args extends unknown[], Result extends { id: string; backupTarget?: Target }>(
   operation: (storage: TeleCryptIOStorage, ...args: Args) => Promise<Result>,
   label: string,
   fileTree?: (args: Args) => string,
@@ -88,7 +88,7 @@ export function backedUp<Args extends unknown[], Result extends { id: string }>(
         }
         throw error;
       }
-      const target = fileTree ? { treeId: fileTree(args), fileId: result.id } : { treeId: result.id };
+      const target = result.backupTarget ?? (fileTree ? { treeId: fileTree(args), fileId: result.id } : { treeId: result.id });
       value.targets.set(targetKey(target), target);
       try {
         persist(value);

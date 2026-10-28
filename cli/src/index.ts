@@ -73,7 +73,7 @@ function withCoreDeadline<T>(
   return opened.run(operation, label);
 }
 
-async function withBackedUpMutation<T extends { id: string }>(
+async function withBackedUpMutation<T extends { id: string; backupTarget?: { treeId: string; fileId?: string; metadataEventId?: string } }>(
   opened: OpenedStorage,
   operation: (signal: AbortSignal) => Promise<T>,
   label: string,
@@ -114,17 +114,18 @@ async function withBackedUpMutation<T extends { id: string }>(
     }
     throw error;
   }
+  const target = result.backupTarget ?? { treeId: fileTreeId ?? result.id, ...(fileTreeId ? { fileId: result.id } : {}) };
   try {
     await opened.persist();
   } catch (error) {
     throw new core.MutationPartialError(label, [result.id],
       "the mutation committed but its local crypto state could not be saved",
-      { cause: error, treeId: fileTreeId ?? result.id,
-        backupTargets: [{ treeId: fileTreeId ?? result.id, ...(fileTreeId ? { fileId: result.id } : {}) }] });
+      { cause: error, treeId: target.treeId, backupTargets: [target] });
   }
   try {
     const settlement = await opened.run(
-      (signal) => opened.storage.waitForKeyBackup(fileTreeId ?? result.id, fileTreeId ? result.id : undefined, { signal }),
+      (signal) => opened.storage.waitForKeyBackup(target.treeId, target.fileId,
+        { signal, ...(target.metadataEventId ? { metadataEventId: target.metadataEventId } : {}) }),
       "key backup settlement",
       25_000,
     );
@@ -139,8 +140,8 @@ async function withBackedUpMutation<T extends { id: string }>(
       "`telecrypt-io storage key-safe setup` to retry backup; do not repeat the mutation.",
       {
         cause: error,
-        treeId: fileTreeId ?? result.id,
-        backupTargets: [{ treeId: fileTreeId ?? result.id, ...(fileTreeId ? { fileId: result.id } : {}) }],
+        treeId: target.treeId,
+        backupTargets: [target],
       },
     );
   }
@@ -671,7 +672,7 @@ subfolder
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
         const result = await withBackedUpMutation(opened, (operationSignal) => core.renameFolder(opened.storage, folderId, name, { signal: operationSignal }), "folder rename");
-        return { json: { ...result }, text: `Renamed folder ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
+        return { json: { id: result.id, name: result.name }, text: `Renamed folder ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });
   });
@@ -756,7 +757,7 @@ vault
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
         const result = await withBackedUpMutation(opened, (operationSignal) => core.renameVault(opened.storage, vaultId, name, { signal: operationSignal }), "vault rename");
-        return { json: { ...result }, text: `Renamed vault ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
+        return { json: { id: result.id, name: result.name }, text: `Renamed vault ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });
   });
@@ -874,7 +875,7 @@ file
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
         const result = await withBackedUpMutation(opened, (operationSignal) => core.renameFile(opened.storage, treeId, fileId, name, { signal: operationSignal }), "file rename", treeId);
-        return { json: { ...result }, text: `Renamed file ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
+        return { json: { id: result.id, name: result.name }, text: `Renamed file ${safeOutputField(result.id)} to "${safeOutputField(result.name)}"` };
       });
     });
   });

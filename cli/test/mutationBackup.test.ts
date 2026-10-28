@@ -216,6 +216,21 @@ describe("encrypted mutations and backup settlement", () => {
     expect(mocks.renameFile).toHaveBeenCalledTimes(1);
   });
 
+  it("retains the exact target when a successful rename's backup fails", async () => {
+    const treeId = "!vault:example.test";
+    const fileId = "$attachment";
+    const target = { treeId, fileId, metadataEventId: "$first-name" };
+    mocks.renameFile.mockResolvedValue({ id: fileId, name: "new.txt", backupTarget: target });
+    mocks.waitForKeyBackup.mockRejectedValue(new Error("backup unavailable"));
+    await main(["node", "telecrypt-io", "storage", "file", "rename", treeId, fileId, "new.txt", "--json"]);
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(stderr)).toMatchObject({ code: "MUTATION_PARTIAL", backupTargets: [target] });
+    expect(mocks.waitForKeyBackup).toHaveBeenCalledWith(treeId, fileId, {
+      signal: expect.any(AbortSignal), metadataEventId: "$first-name",
+    });
+    expect(mocks.renameFile).toHaveBeenCalledTimes(1);
+  });
+
   it.each([undefined, "$attachment"])("cleans up acknowledged upload IDs with event %s", async (fileId) => {
     const treeId = "!vault:example.test";
     const mediaId = "mxc://example.test/uploaded";
