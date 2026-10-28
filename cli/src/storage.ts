@@ -20,7 +20,6 @@ const CRYPTO_SNAPSHOT_TIMEOUT_MS = 30_000;
 const STORAGE_OPEN_TIMEOUT_MS = 30_000;
 // Uploads retain acknowledged IDs while an in-flight native request settles.
 // The SDK's native Matrix HTTP requests have a 30-second timeout.
-const UPLOAD_CANCELLATION_SETTLE_TIMEOUT_MS = 30_000;
 export const STORAGE_OPERATION_TIMEOUT_MS = 120_000;
 
 export interface OpenedStorage {
@@ -184,12 +183,10 @@ async function boundedStorageOperation<T>(
       // The SDK upload stops before its next write and reports IDs from an
       // already accepted request. Keep the client alive until that receipt is
       // available instead of replacing it with the outer cancellation error.
-      boundaryJoin = settlePromiseWithin(operationPromise, UPLOAD_CANCELLATION_SETTLE_TIMEOUT_MS)
-        .then((settlement) => {
-          if (settlement.status === "timeout") return cancelAtBoundary(error);
-          boundaryFailure = settlement.status === "rejected" ? settlement.error : error;
-          rejectBoundary(boundaryFailure);
-        });
+      boundaryJoin = operationPromise.then(
+        () => { boundaryFailure = error; rejectBoundary(error); },
+        (failure: unknown) => { boundaryFailure = failure; rejectBoundary(failure); },
+      );
     } else {
       boundaryJoin = cancelAtBoundary(error);
     }

@@ -104,10 +104,11 @@ describe("upload cancellation receipts", () => {
     await opened.close();
   });
 
-  it("bounds an upload that never settles, then stops the client and preserves the prior snapshot", async () => {
+  it("waits for the native upload to settle before stopping and snapshotting", async () => {
     vi.useFakeTimers();
     const { opened, directory, controller, stopClient } = await openFixture();
-    const pending = opened.run(() => new Promise<never>(() => {}), "file upload", 100,
+    let rejectUpload!: (error: unknown) => void;
+    const pending = opened.run(() => new Promise<never>((_resolve, reject) => { rejectUpload = reject; }), "file upload", 100,
       { settleAfterCancellation: true });
     const failure = pending.catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
@@ -115,12 +116,13 @@ describe("upload cancellation receipts", () => {
     await vi.advanceTimersByTimeAsync(29_999);
     expect(stopClient).not.toHaveBeenCalled();
     expect(() => acquireProfileLock(directory)).toThrow(/profile is busy/);
-    await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(await failure).toMatchObject({ message: "operation cancelled; storage cleanup failed" });
-    expect(stopClient).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(stopClient).not.toHaveBeenCalled();
+    rejectUpload(new Error("native send settled"));
+    expect(await failure).toMatchObject({ message: "native send settled" });
     await opened.close();
-    expect(persistCryptoStore).not.toHaveBeenCalled();
+    expect(stopClient).toHaveBeenCalledTimes(1);
+    expect(persistCryptoStore).toHaveBeenCalledTimes(1);
     acquireProfileLock(directory).release();
   });
 
