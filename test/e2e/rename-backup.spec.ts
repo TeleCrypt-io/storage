@@ -31,6 +31,11 @@ for (const failure of ["readback", "pointer", "success"] as const) test(`preserv
       await restoreRecoveryKey(other, recoveryKey!);
       await other.getByTestId("nav-vaults").click();
       await openVaultByName(other, "Rename recovery");
+      await other.route("**/_matrix/client/v3/room_keys/keys**", async (route) => {
+        if (route.request().method() === "PUT") {
+          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ errcode: "M_UNKNOWN", error: "backup unavailable" }) });
+        } else await route.continue();
+      });
     }
     let listingWrites = 0;
     let readbackFailed = false;
@@ -113,6 +118,7 @@ for (const failure of ["readback", "pointer", "success"] as const) test(`preserv
     await expect(page.getByTestId("oidc-login")).toBeVisible({ timeout: 60000 });
     expect(listingWrites).toBe(1);
     if (other) {
+      await other.unroute("**/_matrix/client/v3/room_keys/keys**");
       await other.getByTestId("logout").click();
       await expect(other.getByTestId("oidc-login")).toBeVisible({ timeout: 60000 });
     }

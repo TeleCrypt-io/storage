@@ -451,6 +451,53 @@ describe("CLI", () => {
   );
 
   it(
+    "settles an unlinked creation name before logout without repeating creation",
+    async () => {
+      const firstDir = freshProfileDir("creation-pointer-first");
+      const firstEnv = { TELECRYPT_IO_STORAGE_HOME: firstDir };
+      const user = await registerProfile(firstDir, "creation-pointer");
+      const failureModule = fileURLToPath(new URL("../harness/creationPointerOutage.mjs", import.meta.url));
+      const created = await cliJson(["storage", "vault", "create", "Unlinked vault"], {
+        ...firstEnv, NODE_OPTIONS: `--import=${failureModule}`,
+      });
+      expect(created.code).not.toBe(0);
+      expect(created.json).toMatchObject({ code: "MUTATION_PARTIAL", backupTargets: [
+        { treeId: expect.any(String), metadataEventId: expect.any(String) },
+      ] });
+      const target = (created.json.backupTargets as Array<{ treeId: string; metadataEventId: string }>)[0]!;
+      const session = JSON.parse(fs.readFileSync(sessionPath(firstDir), "utf8")) as Session;
+      const headers = { Authorization: `Bearer ${session.accessToken}` };
+      const eventResponse = await fetch(`${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(target.treeId)}/event/${encodeURIComponent(target.metadataEventId)}`, { headers });
+      expect(eventResponse.status).toBe(200);
+      const event = await eventResponse.json() as { content: { session_id: string } };
+      const versionResponse = await fetch(`${HOMESERVER}/_matrix/client/v3/room_keys/version`, { headers });
+      const version = (await versionResponse.json() as { version: string }).version;
+      const backupUrl = `${HOMESERVER}/_matrix/client/v3/room_keys/keys/${encodeURIComponent(target.treeId)}/${encodeURIComponent(event.content.session_id)}?version=${encodeURIComponent(version)}`;
+      expect((await fetch(backupUrl, { headers })).status).toBe(404);
+      const outageModule = fileURLToPath(new URL("../harness/backupOutage.mjs", import.meta.url));
+      expect((await cliJson(["storage", "logout"], { ...firstEnv, NODE_OPTIONS: `--import=${outageModule}` })).code).not.toBe(0);
+      expect((await cliJson(["storage", "logout"], firstEnv)).code).toBe(0);
+
+      const secondDir = freshProfileDir("creation-pointer-second");
+      const secondEnv = { TELECRYPT_IO_STORAGE_HOME: secondDir };
+      markProfileForRemoteCleanup(secondDir);
+      await loginProfile(secondDir, user);
+      expect((await cliJson(["storage", "key-safe", "restore", "--key-stdin"], secondEnv, { stdin: user.recoveryKey })).code).toBe(0);
+      const secondSession = JSON.parse(fs.readFileSync(sessionPath(secondDir), "utf8")) as Session;
+      const secondHeaders = { Authorization: `Bearer ${secondSession.accessToken}` };
+      expect((await fetch(backupUrl, { headers: secondHeaders })).status).toBe(200);
+      for (const action of ["leave", "forget"]) {
+        const response = await fetch(`${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(target.treeId)}/${action}`, {
+          method: "POST", headers: { ...secondHeaders, "Content-Type": "application/json" }, body: "{}",
+        });
+        expect(response.status).toBe(200);
+      }
+      expect((await cliJson(["storage", "logout"], secondEnv)).code).toBe(0);
+    },
+    180000,
+  );
+
+  it(
     "backs up the exact acknowledged rename metadata after its listing fails",
     async () => {
       const firstDir = freshProfileDir("rename-pointer-first");
