@@ -122,6 +122,7 @@ async function boundedStorageOperation<T>(
   timeoutMessage: string,
   cancelOperation?: () => void | Promise<void>,
   settleAfterCancellation = false,
+  onUnsettled?: () => void,
 ): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new StorageError("storage operation timeout must be positive");
@@ -143,7 +144,7 @@ async function boundedStorageOperation<T>(
       const cleanupPromise = Promise.resolve(cleanup);
       // Cancellation hooks are bounded so the operation boundary does not wait
       // forever for cleanup.
-      return settlePromiseWithin(cleanupPromise).then((settlement) => {
+      return settlePromiseWithin(cleanupPromise).then(async (settlement) => {
         if (settlement.status === "rejected") {
           boundaryFailure = new AggregateError(
             [error, settlement.error],
@@ -157,6 +158,12 @@ async function boundedStorageOperation<T>(
           );
         } else {
           boundaryFailure = error;
+        }
+        const operationSettlement = await settlePromiseWithin(operationPromise);
+        if (operationSettlement.status === "timeout") {
+          onUnsettled?.();
+          boundaryFailure = new AggregateError([boundaryFailure, new StorageError("storage operation did not settle after cancellation")],
+            `${error.message}; storage cleanup failed`);
         }
         rejectBoundary(boundaryFailure);
       });
@@ -338,7 +345,6 @@ function createOpenedStorage(
     // supported cancellation boundary for those in-flight requests; close()
     // below still persists local crypto state and releases the profile lock.
     try {
-      snapshotSafe = false;
       storage.getClient().stopClient();
     } catch (error) {
       // The public cancellation result remains primary, but close() must
@@ -365,10 +371,10 @@ function createOpenedStorage(
       signal,
       `${label} timed out; retry the command`,
       () => {
-        snapshotSafe = false;
         storage.getClient().stopClient();
       },
       settlingAfterCancellation,
+      () => { snapshotSafe = false; },
     );
     activeOperation = running;
     try {

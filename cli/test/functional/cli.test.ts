@@ -427,6 +427,30 @@ describe("CLI", () => {
   );
 
   it(
+    "retains a committed encrypted vault across SIGINT and retries its backup without creating it again",
+    async () => {
+      const dir = freshProfileDir("interrupt-backup");
+      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+      await registerProfile(dir, "interrupt-backup");
+      const interruptModule = fileURLToPath(new URL("../harness/backupInterrupt.mjs", import.meta.url));
+      const interrupted = await cliJson(["storage", "vault", "create", "Interrupted vault"], {
+        ...env, NODE_OPTIONS: `--import=${interruptModule}`,
+      });
+      expect(interrupted.code).not.toBe(0);
+      expect(interrupted.json).toMatchObject({ code: "MUTATION_PARTIAL", completedIds: [expect.any(String)] });
+      const vaultId = (interrupted.json.completedIds as string[])[0];
+      const retry = await cliJson(["storage", "key-safe", "setup"], env);
+      expect(retry.code).toBe(0);
+      const vaults = await cliJson(["storage", "vault", "list"], env);
+      expect(vaults.code).toBe(0);
+      expect(vaults.json.vaults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: vaultId, name: "Interrupted vault" }),
+      ]));
+    },
+    180000,
+  );
+
+  it(
     "backs up metadata, recovers a committed creation after an outage, and restores names on a fresh login",
     async () => {
       const originalDir = freshProfileDir("metadata-backup");
@@ -452,6 +476,12 @@ describe("CLI", () => {
         return await response.json() as { count: number };
       };
       expect((await backup()).count).toBe(0);
+
+      const failedLogout = await cliJson(["storage", "logout"], {
+        ...env, NODE_OPTIONS: `--import=${outageModule}`,
+      });
+      expect(failedLogout.code).not.toBe(0);
+      expect(fs.existsSync(sessionPath(originalDir))).toBe(true);
 
       const retry = await cliJson(["storage", "key-safe", "setup"], env);
       expect(retry.code).toBe(0);

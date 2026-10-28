@@ -116,7 +116,8 @@ describe("upload cancellation receipts", () => {
     expect(stopClient).not.toHaveBeenCalled();
     expect(() => acquireProfileLock(directory)).toThrow(/profile is busy/);
     await vi.advanceTimersByTimeAsync(1);
-    expect(await failure).toMatchObject({ message: "operation cancelled" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await failure).toMatchObject({ message: "operation cancelled; storage cleanup failed" });
     expect(stopClient).toHaveBeenCalledTimes(1);
     await opened.close();
     expect(persistCryptoStore).not.toHaveBeenCalled();
@@ -130,7 +131,8 @@ describe("upload cancellation receipts", () => {
     const failure = pending.catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
     controller.abort();
-    expect(await failure).toMatchObject({ message: "operation cancelled" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await failure).toMatchObject({ message: "operation cancelled; storage cleanup failed" });
     expect(stopClient).toHaveBeenCalled();
     await opened.close();
     expect(persistCryptoStore).not.toHaveBeenCalled();

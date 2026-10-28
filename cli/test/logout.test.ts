@@ -6,6 +6,16 @@ import type { Session } from "../src/profile.js";
 import { requestServerLogout, logoutProfile } from "../src/logout.js";
 import { cryptoSnapshotPath, logoutMarkerPath, pendingSessionPath, sessionPath, writePendingSessionUnlocked, writeSession } from "../src/profile.js";
 
+const backup = vi.hoisted(() => ({ wait: vi.fn(), close: vi.fn() }));
+vi.mock("../src/storage.js", () => ({
+  openStorage: async () => ({
+    storage: { keySafe: { getStatus: async () => ({ state: "ready" }) } },
+    run: (operation: (signal: AbortSignal) => Promise<unknown>) => operation(new AbortController().signal),
+    close: backup.close,
+  }),
+  waitForBackupSettled: backup.wait,
+}));
+
 const session: Session = {
   homeserver: "https://backend.telecrypt.io",
   userId: "@alice:telecrypt.io",
@@ -36,6 +46,8 @@ function exactResponse(url: string, body: BodyInit | null, init: ResponseInit): 
 }
 
 afterEach(({ task }) => {
+  backup.wait.mockReset();
+  backup.close.mockReset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   const pending = directories.splice(0);
@@ -444,10 +456,24 @@ describe("server logout", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const pending = logoutProfile(dir, controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     controller.abort(new Error("cancelled by test"));
     await expect(pending).rejects.toThrow("server logout cancelled");
     expect(fs.existsSync(sessionPath(dir))).toBe(true);
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
+  });
+
+  it("retains the session and snapshot when backup settlement fails", async () => {
+    const dir = fixtureDirectory("telecrypt-logout-backup");
+    writeSession(session, dir);
+    fs.writeFileSync(cryptoSnapshotPath(dir), "pending keys");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    backup.wait.mockRejectedValueOnce(new Error("backup offline"));
+    await expect(logoutProfile(dir)).rejects.toThrow("key backup did not settle");
+    expect(fs.readFileSync(cryptoSnapshotPath(dir), "utf8")).toBe("pending keys");
+    expect(fs.existsSync(sessionPath(dir))).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("retains local credentials when remote revocation fails", async () => {

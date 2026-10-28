@@ -71,6 +71,7 @@ beforeEach(() => {
       waitForKeyBackup: mocks.waitForKeyBackup,
     },
     run: async (operation: (signal: AbortSignal) => Promise<unknown>) => operation(new AbortController().signal),
+    persist: vi.fn().mockResolvedValue(undefined),
     close: mocks.close,
   });
   mocks.close.mockResolvedValue(undefined);
